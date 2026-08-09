@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="#B71C1C"
+    android:padding="8dp">
+
+    <Button
+        android:id="@+id/widget_sos_button"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:text="SOS"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:textSize="18sp"
+        android:background="@android:color/transparent" />
+
+</LinearLayout>

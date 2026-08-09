@@ -1,0 +1,71 @@
+{
+  "expo": {
+    "name": "SafeGuard SOS",
+    "slug": "safeguard-sos",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/logo.png",
+    "scheme": "safeguardsos",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.safeguard.sos",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "SafeGuard SOS needs camera access to capture evidence photos and videos during emergency SOS events.",
+        "NSMicrophoneUsageDescription": "SafeGuard SOS needs microphone access to record audio evidence during emergency SOS events.",
+        "NSLocationWhenInUseUsageDescription": "SafeGuard SOS needs location access to share live GPS coordinates with emergency contacts.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "SafeGuard SOS needs background location access to track and update your position during active SOS emergencies.",
+        "NSContactsUsageDescription": "SafeGuard SOS needs access to your contacts so you can select trusted emergency contacts."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/logo.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.safeguard.sos",
+      "versionCode": 1,
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.SEND_SMS",
+        "android.permission.CALL_PHONE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.READ_CONTACTS",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.INTERNET",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/logo.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/logo.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "expo-web-browser",
+      "./plugin/withSOSNative"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

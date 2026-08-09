@@ -1,0 +1,400 @@
+import React, { createContext, useState, useRef, ReactNode, useEffect } from 'react';
+import { Vibration, Platform, Linking } from 'react-native';
+import * as ExpoLocation from 'expo-location';
+import { StorageService } from '@/services/storageService';
+import { webAudioService } from '@/services/webAudioService';
+import { sirenService } from '@/services/sirenService';
+import { SupabaseService } from '@/services/supabaseService';
+import { motionService } from '@/services/motionService';
+import { watchService } from '@/services/watchService';
+import { getTrackingUrl } from '@/services/trackingUrl';
+import { FallDetectionModal } from '@/components/feature/FallDetectionModal';
+import { watchConnectivityService } from '@/services/watchConnectivityService';
+import { triggerSOS as triggerNativeSOS, syncCachedSOSTriggerData, SOSSource } from '@/src/useSOSTrigger';
+
+type SOSPhase = 'idle' | 'arming' | 'countdown' | 'active' | 'cancelling';
+
+interface SOSContextType {
+  phase: SOSPhase;
+  countdown: number;
+  activeSeconds: number;
+  isSirenMuted: boolean;
+  isFallModalVisible: boolean;
+  activeSOSEventId: string | null;
+  toggleSirenMute: () => void;
+  startArming: () => void;
+  cancelSOS: () => void;
+  triggerSOS: (source?: SOSSource) => void;
+  deactivateSOS: () => void;
+  dismissFallModal: () => void;
+  sosHistory: SOSEvent[];
+  loadHistory: () => Promise<void>;
+}
+
+export interface SOSEvent {
+  id: string;
+  triggeredAt: string;
+  resolvedAt: string | null;
+  location: string;
+  contactsNotified: number;
+  duration: number;
+}
+
+export const SOSContext = createContext<SOSContextType>({
+  phase: 'idle',
+  countdown: 3,
+  activeSeconds: 0,
+  isSirenMuted: false,
+  isFallModalVisible: false,
+  activeSOSEventId: null,
+  toggleSirenMute: () => {},
+  startArming: () => {},
+  cancelSOS: () => {},
+  triggerSOS: () => {},
+  deactivateSOS: () => {},
+  dismissFallModal: () => {},
+  sosHistory: [],
+  loadHistory: async () => {},
+});
+
+export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [phase, setPhase] = useState<SOSPhase>('idle');
+  const [countdown, setCountdown] = useState(3);
+  const [activeSeconds, setActiveSeconds] = useState(0);
+  const [isSirenMuted, setIsSirenMuted] = useState(false);
+  const [isFallModalVisible, setIsFallModalVisible] = useState(false);
+  const [activeSOSEventId, setActiveSOSEventId] = useState<string | null>(null);
+  const [sosHistory, setSosHistory] = useState<SOSEvent[]>([]);
+
+  const countdownRef = useRef<any>(null);
+  const activeRef = useRef<any>(null);
+  const armStart = useRef<number>(0);
+  const currentSOSEventIdRef = useRef<string | null>(null);
+  const locationWatchRef = useRef<any>(null);
+  const lastCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const fallSourceRef = useRef<SOSSource>('fall_detection');
+
+  useEffect(() => {
+    loadHistory();
+
+    // Register fall/impact detection callback
+    motionService.registerFallCallback((source) => {
+      fallSourceRef.current = source || 'fall_detection';
+      setIsFallModalVisible(true);
+    });
+
+    // Register smartwatch remote trigger callback
+    watchService.registerSOSTriggerCallback(() => {
+      triggerSOS('smartwatch');
+    });
+
+    // Register watch connectivity callback
+    watchConnectivityService.registerSOSCallback(() => {
+      triggerSOS('smartwatch');
+    });
+
+    return () => {
+      clearCountdown();
+      clearActive();
+      stopLocationWatch();
+      motionService.stopFallDetection();
+    };
+  }, []);
+
+  const loadHistory = async () => {
+    const history = await StorageService.getSOSHistory();
+    setSosHistory(history);
+  };
+
+  const stopLocationWatch = () => {
+    if (locationWatchRef.current) {
+      if (typeof locationWatchRef.current === 'number' && typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.clearWatch(locationWatchRef.current);
+      } else if (typeof locationWatchRef.current.remove === 'function') {
+        locationWatchRef.current.remove();
+      }
+      locationWatchRef.current = null;
+    }
+  };
+
+  const toggleSirenMute = () => {
+    const nextMute = !isSirenMuted;
+    setIsSirenMuted(nextMute);
+    sirenService.setMuted(nextMute);
+  };
+
+  const clearCountdown = () => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+  };
+
+  const clearActive = () => {
+    if (activeRef.current) {
+      clearInterval(activeRef.current);
+      activeRef.current = null;
+    }
+  };
+
+  const startArming = () => {
+    setIsFallModalVisible(false);
+    setPhase('arming');
+    armStart.current = Date.now();
+  };
+
+  const stopLiveTrackingSession = async () => {
+    stopLocationWatch();
+    if (currentSOSEventIdRef.current) {
+      const sosId = currentSOSEventIdRef.current;
+      const coords = lastCoordsRef.current || { lat: 37.7749, lng: -122.4194 };
+      await SupabaseService.upsertLiveLocation(sosId, coords.lat, coords.lng, false);
+      currentSOSEventIdRef.current = null;
+    }
+    setActiveSOSEventId(null);
+  };
+
+  const cancelSOS = () => {
+    clearCountdown();
+    clearActive();
+    stopLiveTrackingSession();
+    sirenService.stopSiren();
+    webAudioService.stopRecording();
+    setIsFallModalVisible(false);
+    setPhase('idle');
+    setCountdown(3);
+    setActiveSeconds(0);
+    setActiveSOSEventId(null);
+  };
+
+  const triggerSOS = (source: SOSSource = 'in_app_button') => {
+    setIsFallModalVisible(false);
+    setPhase('countdown');
+    setCountdown(3);
+
+    // Call native Android bridge for persistent service + recording + SMS + call
+    if (Platform.OS === 'android') {
+      triggerNativeSOS(source).catch((err: any) => console.warn('Native SOS trigger error:', err));
+      StorageService.getContacts().then((contacts) => {
+        getCurrentLocation().then((loc) => {
+          syncCachedSOSTriggerData(contacts, loc.lat, loc.lng);
+        });
+      });
+    }
+
+    if (Platform.OS !== 'web') {
+      Vibration.vibrate([200, 100, 200, 100, 200]);
+    }
+    let c = 3;
+    countdownRef.current = setInterval(() => {
+      c -= 1;
+      setCountdown(c);
+      if (c <= 0) {
+        clearCountdown();
+        activateSOS();
+      }
+    }, 1000);
+  };
+
+  const getCurrentLocation = async (): Promise<{ lat: number; lng: number; address: string }> => {
+    try {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.geolocation) {
+        const webPosition = await new Promise<any>((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve(pos),
+            () => resolve(null),
+            { timeout: 4000, enableHighAccuracy: true }
+          );
+        });
+        if (webPosition) {
+          const lat = webPosition.coords.latitude;
+          const lng = webPosition.coords.longitude;
+          return { lat, lng, address: `Live GPS (${lat.toFixed(4)}, ${lng.toFixed(4)})` };
+        }
+      }
+      const perm = await ExpoLocation.requestForegroundPermissionsAsync();
+      if (perm.status === 'granted') {
+        const loc = await ExpoLocation.getCurrentPositionAsync({ accuracy: ExpoLocation.Accuracy.High });
+        return {
+          lat: loc.coords.latitude,
+          lng: loc.coords.longitude,
+          address: `Live GPS (${loc.coords.latitude.toFixed(4)}, ${loc.coords.longitude.toFixed(4)})`,
+        };
+      }
+    } catch (e) {
+      console.warn('GPS location retrieval error:', e);
+    }
+    return { lat: 37.7749, lng: -122.4194, address: 'Live GPS Location' };
+  };
+
+  const startContinuousLocationWatch = async (sosEventId: string) => {
+    stopLocationWatch();
+    currentSOSEventIdRef.current = sosEventId;
+
+    const onNewCoords = (lat: number, lng: number) => {
+      lastCoordsRef.current = { lat, lng };
+      SupabaseService.upsertLiveLocation(sosEventId, lat, lng, true);
+    };
+
+    try {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.geolocation) {
+        locationWatchRef.current = navigator.geolocation.watchPosition(
+          (pos) => onNewCoords(pos.coords.latitude, pos.coords.longitude),
+          (err) => console.warn('Web live location watch error:', err),
+          { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+        );
+      } else {
+        const { status } = await ExpoLocation.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          locationWatchRef.current = await ExpoLocation.watchPositionAsync(
+            {
+              accuracy: ExpoLocation.Accuracy.High,
+              timeInterval: 10000, // Update every 10s
+              distanceInterval: 15, // Or every 15 meters
+            },
+            (loc) => onNewCoords(loc.coords.latitude, loc.coords.longitude)
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to start continuous location watch:', err);
+    }
+  };
+
+  const activateSOS = async () => {
+    setIsFallModalVisible(false);
+    setPhase('active');
+    setActiveSeconds(0);
+
+    const sosEventId = `sos_${Date.now()}`;
+    currentSOSEventIdRef.current = sosEventId;
+    setActiveSOSEventId(sosEventId);
+
+    // Start Web Audio Siren
+    sirenService.startSiren();
+
+    // Start Web Ambient Audio Recording
+    webAudioService.startRecording();
+
+    if (Platform.OS !== 'web') {
+      Vibration.vibrate([500, 200, 500, 200, 500, 200, 500]);
+    }
+    let secs = 0;
+    activeRef.current = setInterval(() => {
+      secs += 1;
+      setActiveSeconds(secs);
+    }, 1000);
+
+    // 1. Fetch User Profile
+    const user = await StorageService.getUser();
+    const userName = user?.name || user?.email || 'SafeGuard User';
+
+    // 2. Retrieve Initial Live GPS Coordinates
+    const loc = await getCurrentLocation();
+    lastCoordsRef.current = { lat: loc.lat, lng: loc.lng };
+
+    // 3. Upsert initial live location to live_locations table
+    await SupabaseService.upsertLiveLocation(sosEventId, loc.lat, loc.lng, true);
+
+    // 4. Start continuous real-time location watching
+    startContinuousLocationWatch(sosEventId);
+
+    // 5. Fetch Priority Emergency Contacts
+    const contacts = await StorageService.getContacts();
+    const contactPhones = contacts.map((c) => c.phone).filter(Boolean);
+
+    let smsStatusResults: any[] = [];
+    if (contactPhones.length > 0) {
+      // 6a. Compute Live Tracking Web Portal URL
+      const trackingUrl = getTrackingUrl(sosEventId);
+      const emergencyMessage = `EMERGENCY SOS: ${userName} needs urgent help!\nTrack Live: ${trackingUrl}\nGoogle Maps: https://maps.google.com/?q=${loc.lat},${loc.lng}`;
+
+      // 6b. Call Edge Function (Twilio / MSG91 SMS) with Live Tracking Link
+      const smsResponse = await SupabaseService.sendSOSEmergencySMS(
+        userName,
+        loc.lat,
+        loc.lng,
+        contactPhones,
+        user?.id,
+        trackingUrl
+      );
+      smsStatusResults = smsResponse.results || [];
+      for (const phone of contactPhones) {
+        const cleanPhone = phone.replace(/[^0-9+]/g, '');
+        const smsUrl = `sms:${cleanPhone}?body=${encodeURIComponent(emergencyMessage)}`;
+        try {
+          if (Platform.OS === 'web' && typeof window !== 'undefined') {
+            window.open(smsUrl, '_blank');
+          } else {
+            await Linking.openURL(smsUrl);
+          }
+        } catch (err) {
+          console.warn(`Direct SMS dispatch error for ${cleanPhone}:`, err);
+        }
+      }
+    }
+
+    // 7. Log the SOS event locally and to Supabase DB
+    const event: SOSEvent = {
+      id: sosEventId,
+      triggeredAt: new Date().toISOString(),
+      resolvedAt: null,
+      location: loc.address,
+      contactsNotified: smsStatusResults.filter((r) => r.status === 'sent').length || contacts.length,
+      duration: 0,
+    };
+
+    await StorageService.addSOSEvent(event);
+    await SupabaseService.logSOSEvent({
+      ...event,
+      contacts_notified: smsStatusResults,
+      trigger_type: 'manual',
+      latitude: loc.lat,
+      longitude: loc.lng,
+    });
+    await loadHistory();
+  };
+
+  const deactivateSOS = async () => {
+    clearActive();
+    await stopLiveTrackingSession();
+    sirenService.stopSiren();
+    webAudioService.stopRecording();
+    setPhase('idle');
+    setActiveSeconds(0);
+    setCountdown(3);
+    await loadHistory();
+  };
+
+  const dismissFallModal = () => {
+    setIsFallModalVisible(false);
+  };
+
+  return (
+    <SOSContext.Provider
+      value={{
+        phase,
+        countdown,
+        activeSeconds,
+        isSirenMuted,
+        isFallModalVisible,
+        activeSOSEventId,
+        toggleSirenMute,
+        startArming,
+        cancelSOS,
+        triggerSOS,
+        deactivateSOS,
+        dismissFallModal,
+        sosHistory,
+        loadHistory,
+      }}
+    >
+      {children}
+      <FallDetectionModal
+        visible={isFallModalVisible}
+        onConfirmSOS={() => triggerSOS(fallSourceRef.current || 'fall_detection')}
+        onCancel={dismissFallModal}
+      />
+    </SOSContext.Provider>
+  );
+};

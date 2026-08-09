@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">SafeGuard SOS</string>
+    <string name="sos_accessibility_description">SafeGuard SOS needs this to detect power-button SOS triggers while your screen is locked.</string>
+</resources>

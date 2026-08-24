@@ -47,14 +47,14 @@ export const SOSContext = createContext<SOSContextType>({
   isSirenMuted: false,
   isFallModalVisible: false,
   activeSOSEventId: null,
-  toggleSirenMute: () => {},
-  startArming: () => {},
-  cancelSOS: () => {},
-  triggerSOS: () => {},
-  deactivateSOS: () => {},
-  dismissFallModal: () => {},
+  toggleSirenMute: () => { },
+  startArming: () => { },
+  cancelSOS: () => { },
+  triggerSOS: () => { },
+  deactivateSOS: () => { },
+  dismissFallModal: () => { },
   sosHistory: [],
-  loadHistory: async () => {},
+  loadHistory: async () => { },
 });
 
 export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => {

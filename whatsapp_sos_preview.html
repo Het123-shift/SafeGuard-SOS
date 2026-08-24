@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SafeGuard SOS - Twilio WhatsApp & Live GPS Tracking Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root {
+      --wa-header: #1f2c34;
+      --wa-chat-bg: #0b141a;
+      --wa-msg-in: #202c33;
+      --wa-text-primary: #e9edef;
+      --wa-text-secondary: #8696a0;
+      --wa-accent: #00a884;
+      --wa-link: #53bdeb;
+      --sg-primary: #dc2626;
+      --sg-primary-glow: rgba(220, 38, 38, 0.35);
+      --sg-bg: #090d16;
+      --sg-card: #131b2e;
+      --sg-card-border: #1e293b;
+      --sg-accent: #38bdf8;
+      --sg-success: #10b981;
+      --font-main: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-main);
+      background: #06080e;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+      overflow-x: hidden;
+    }
+
+    /* Header & Control Bar */
+    .top-bar {
+      width: 100%;
+      max-width: 1200px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding: 16px 24px;
+      background: rgba(19, 27, 46, 0.8);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--sg-card-border);
+      border-radius: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, #ef4444, #991b1b);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 0 20px var(--sg-primary-glow);
+    }
+
+    .brand-text h1 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-text p {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .controls-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn {
+      padding: 9px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-sos {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      color: white;
+      box-shadow: 0 4px 14px rgba(220, 38, 38, 0.4);
+    }
+
+    .btn-sos:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(220, 38, 38, 0.6);
+    }
+
+    .btn-secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+    }
+
+    .btn-secondary:hover {
+      background: #334155;
+      color: white;
+    }
+
+    /* Main Dual View Grid */
+    .preview-container {
+      width: 100%;
+      max-width: 1200px;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 28px;
+      align-items: start;
+    }
+
+    @media (max-width: 960px) {
+      .preview-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Device Mockup for WhatsApp */
+    .phone-mockup {
+      width: 100%;
+      height: 680px;
+      background: #000;
+      border-radius: 40px;
+      padding: 12px;
+      border: 4px solid #334155;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(0, 168, 132, 0.15);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .phone-screen {
+      flex: 1;
+      background: var(--wa-chat-bg);
+      border-radius: 30px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* WhatsApp Header */
+    .wa-top {
+      background: var(--wa-header);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .wa-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #ef4444, #b91c1c);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .wa-info {
+      flex: 1;
+    }
+
+    .wa-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--wa-text-primary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .wa-badge {
+      font-size: 11px;
+      background: rgba(0, 168, 132, 0.2);
+      color: var(--wa-accent);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+
+    .wa-status {
+      font-size: 11px;
+      color: var(--wa-text-secondary);
+    }
+
+    /* WhatsApp Chat Body */
+    .wa-chat {
+      flex: 1;
+      padding: 16px 12px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background-image: radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 0);
+      background-size: 16px 16px;
+    }
+
+    .wa-bubble {
+      max-width: 90%;
+      background: var(--wa-msg-in);
+      border-radius: 12px;
+      border-top-left-radius: 2px;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--wa-text-primary);
+      position: relative;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+      border-left: 3px solid #ef4444;
+      animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    @keyframes popIn {
+      from { opacity: 0; transform: scale(0.9) translateY(10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .wa-alert-header {
+      color: #ef4444;
+      font-weight: 700;
+      font-size: 14px;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .wa-text-bold {
+      font-weight: 600;
+    }
+
+    .wa-card-preview {
+      margin-top: 10px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+
+    .wa-card-preview:hover {
+      transform: scale(1.02);
+    }
+
+    .wa-card-img {
+      height: 90px;
+      background: linear-gradient(135deg, #1e293b, #0f172a);
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .radar-pulse {
+      position: absolute;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: rgba(239, 68, 68, 0.3);
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.6); opacity: 1; }
+      100% { transform: scale(2.2); opacity: 0; }
+    }
+
+    .radar-dot {
+      width: 14px;
+      height: 14px;
+      background: #ef4444;
+      border: 2px solid white;
+      border-radius: 50%;
+      z-index: 2;
+    }
+
+    .wa-card-body {
+      padding: 8px 10px;
+    }
+
+    .wa-card-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--wa-link);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .wa-card-desc {
+      font-size: 11px;
+      color: var(--wa-text-secondary);
+      margin-top: 2px;
+    }
+
+    .wa-link-btn {
+      color: var(--wa-link);
+      text-decoration: underline;
+      cursor: pointer;
+      word-break: break-all;
+    }
+
+    .wa-time {
+      text-align: right;
+      font-size: 10px;
+      color: var(--wa-text-secondary);
+      margin-top: 6px;
+    }
+
+    /* Live Tracking Portal Mockup */
+    .tracking-portal {
+      background: var(--sg-card);
+      border: 1px solid var(--sg-card-border);
+      border-radius: 24px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      height: 680px;
+    }
+
+    .portal-header {
+      padding: 16px 24px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--sg-card-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .portal-title-box {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .status-badge.live {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      box-shadow: 0 0 8px #ef4444;
+      animation: blink 1s infinite alternate;
+    }
+
+    @keyframes blink {
+      from { opacity: 0.3; }
+      to { opacity: 1; }
+    }
+
+    .portal-body {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      overflow: hidden;
+    }
+
+    @media (max-width: 768px) {
+      .portal-body {
+        grid-template-columns: 1fr;
+        grid-template-rows: 300px 1fr;
+      }
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #0b1329;
+      z-index: 1;
+    }
+
+    .portal-sidebar {
+      background: #0f172a;
+      border-left: 1px solid var(--sg-card-border);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    .info-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .info-card-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .info-card-value {
+      font-size: 15px;
+      font-weight: 700;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .metric-box {
+      background: rgba(15, 23, 42, 0.6);
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .metric-title {
+      font-size: 10px;
+      color: #94a3b8;
+    }
+
+    .metric-val {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--sg-accent);
+      margin-top: 2px;
+    }
+
+    .action-btn {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: none;
+      transition: transform 0.15s;
+    }
+
+    .btn-maps {
+      background: #2563eb;
+      color: white;
+    }
+
+    .btn-maps:hover {
+      background: #1d4ed8;
+      transform: translateY(-1px);
+    }
+
+    .btn-call {
+      background: #10b981;
+      color: white;
+    }
+
+    .btn-call:hover {
+      background: #059669;
+      transform: translateY(-1px);
+    }
+
+    .raw-payload-box {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #a5f3fc;
+      max-height: 120px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation & Controls -->
+  <div class="top-bar">
+    <div class="brand">
+      <div class="brand-icon">🛡️</div>
+      <div class="brand-text">
+        <h1>SafeGuard SOS • Twilio WhatsApp & GPS Tracking</h1>
+        <p>Live End-to-End Emergency Dispatch Simulation</p>
+      </div>
+    </div>
+    <div class="controls-group">
+      <button class="btn btn-secondary" onclick="simulateMovement()">📍 Move Victim Pin</button>
+      <button class="btn btn-sos" onclick="triggerSOS()">🚨 Re-Trigger SOS Alert</button>
+    </div>
+  </div>
+
+  <!-- Dual Device & Portal Preview -->
+  <div class="preview-container">
+
+    <!-- Left: WhatsApp Smartphone View -->
+    <div class="phone-mockup">
+      <div class="phone-screen">
+        <!-- WhatsApp Chat Top Bar -->
+        <div class="wa-top">
+          <div class="wa-avatar">🚨</div>
+          <div class="wa-info">
+            <div class="wa-name">
+              SafeGuard Alert Bot
+              <span class="wa-badge">Twilio Official</span>
+            </div>
+            <div class="wa-status">Emergency Broadcast System</div>
+          </div>
+        </div>
+
+        <!-- WhatsApp Chat Messages -->
+        <div class="wa-chat" id="waChat">
+          <div class="wa-bubble">
+            <div class="wa-alert-header">🚨 EMERGENCY SOS ALERT!</div>
+            <div><span class="wa-text-bold">Het Patel</span> has triggered an urgent SOS alert and requires immediate assistance!</div>
+            
+            <div style="margin-top: 8px;">
+              📍 <span class="wa-text-bold">Live GPS Tracker:</span><br/>
+              <span class="wa-link-btn" onclick="focusTracker()">https://safeguard-sos.app/track/sos_9841029</span>
+            </div>
+
+            <div style="margin-top: 6px;">
+              🗺️ <span class="wa-text-bold">Google Maps Pin:</span><br/>
+              <a href="https://maps.google.com/?q=19.0760,72.8777" target="_blank" class="wa-link-btn">https://maps.google.com/?q=19.0760,72.8777</a>
+            </div>
+
+            <!-- WhatsApp Link Preview Card -->
+            <div class="wa-card-preview" onclick="focusTracker()">
+              <div class="wa-card-img">
+                <div class="radar-pulse"></div>
+                <div class="radar-dot"></div>
+              </div>
+              <div class="wa-card-body">
+                <div class="wa-card-title">📡 SafeGuard SOS Live Realtime Tracker</div>
+                <div class="wa-card-desc">Click to view live coordinates, battery status, and emergency audio feed.</div>
+              </div>
+            </div>
+
+            <div class="wa-time" id="msgTime">20:11 • Sent via Twilio WhatsApp</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Live Web Tracking Portal -->
+    <div class="tracking-portal">
+      <div class="portal-header">
+        <div class="portal-title-box">
+          <span style="font-size: 20px;">🛡️</span>
+          <div>
+            <h2 style="font-size: 16px; font-weight: 700;">Live Emergency Tracker</h2>
+            <p style="font-size: 11px; color: #94a3b8;">Event ID: <span style="font-family: var(--font-mono); color: #38bdf8;">sos_9841029</span></p>
+          </div>
+        </div>
+        <div class="status-badge live">
+          <span class="status-dot"></span> LIVE TRANSMISSION
+        </div>
+      </div>
+
+      <div class="portal-body">
+        <!-- Interactive Leaflet Map -->
+        <div id="map"></div>
+
+        <!-- Sidebar Information -->
+        <div class="portal-sidebar">
+          <div class="info-card">
+            <div class="info-card-label">User In Distress</div>
+            <div class="info-card-value">
+              <span>👤</span> Het Patel (+91 98765 43210)
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric-box">
+              <div class="metric-title">GPS ACCURACY</div>
+              <div class="metric-val" id="accVal">±4.2 meters</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-title">DEVICE BATTERY</div>
+              <div class="metric-val" style="color: #10b981;">⚡ 84%</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-title">LAST SYNC</div>
+              <div class="metric-val" id="syncVal" style="color: #f59e0b;">Just now</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-title">SPEED</div>
+              <div class="metric-val">1.2 km/h (Walking)</div>
+            </div>
+          </div>
+
+          <div class="info-card">
+            <div class="info-card-label">Current Coordinates</div>
+            <div class="info-card-value" style="font-family: var(--font-mono); font-size: 13px; color: #38bdf8;" id="coordText">
+              19.076000, 72.877700
+            </div>
+          </div>
+
+          <button class="action-btn btn-maps" onclick="openGoogleMaps()">
+            🗺️ Open in Google Maps Navigation
+          </button>
+
+          <button class="action-btn btn-call" onclick="alert('Simulating direct phone call to Emergency Services / Contact...')">
+            📞 Direct Call Emergency Services
+          </button>
+
+          <div>
+            <div class="info-card-label">Twilio API Payload Preview</div>
+            <div class="raw-payload-box" id="payloadBox">{
+  "From": "whatsapp:+14155238886",
+  "To": "whatsapp:+919876543210",
+  "Status": "Delivered",
+  "TrackingURL": "https://safeguard-sos.app/track/sos_9841029"
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    let lat = 19.0760;
+    let lng = 72.8777;
+    let map, marker, circle;
+    let secondsAgo = 0;
+
+    // Initialize Leaflet Map
+    function initMap() {
+      map = L.map('map', {
+        zoomControl: true,
+        attributionControl: false
+      }).setView([lat, lng], 16);
+
+      // Dark Mode Tile Layer
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19,
+        subdomains: 'abcd',
+      }).addTo(map);
+
+      // Victim Beacon Icon
+      const victimIcon = L.divIcon({
+        className: 'custom-beacon',
+        html: `
+          <div style="position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;">
+            <div style="position: absolute; width: 32px; height: 32px; border-radius: 50%; background: rgba(239, 68, 68, 0.4); animation: pulse 1.5s infinite;"></div>
+            <div style="width: 16px; height: 16px; border-radius: 50%; background: #dc2626; border: 3px solid white; box-shadow: 0 0 10px rgba(0,0,0,0.5);"></div>
+          </div>
+        `,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
+      });
+
+      marker = L.marker([lat, lng], { icon: victimIcon }).addTo(map);
+      marker.bindPopup('<b>🚨 Het Patel (Distress Location)</b><br>Live GPS Streaming Active').openPopup();
+
+      circle = L.circle([lat, lng], {
+        radius: 25,
+        color: '#dc2626',
+        fillColor: '#ef4444',
+        fillOpacity: 0.15
+      }).addTo(map);
+    }
+
+    function simulateMovement() {
+      lat += (Math.random() - 0.5) * 0.0012;
+      lng += (Math.random() - 0.5) * 0.0012;
+
+      marker.setLatLng([lat, lng]);
+      circle.setLatLng([lat, lng]);
+      map.panTo([lat, lng], { animate: true, duration: 1 });
+
+      document.getElementById('coordText').innerText = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      document.getElementById('accVal').innerText = `±${(3 + Math.random() * 2).toFixed(1)} meters`;
+      secondsAgo = 0;
+      document.getElementById('syncVal').innerText = `Just now`;
+    }
+
+    function triggerSOS() {
+      const chat = document.getElementById('waChat');
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      
+      const newBubble = document.createElement('div');
+      newBubble.className = 'wa-bubble';
+      newBubble.innerHTML = `
+        <div class="wa-alert-header">🚨 EMERGENCY SOS ALERT (NEW)!</div>
+        <div><span class="wa-text-bold">Het Patel</span> updated emergency status at ${timeStr}.</div>
+        <div style="margin-top: 8px;">
+          📍 <span class="wa-text-bold">Live GPS Tracker:</span><br/>
+          <span class="wa-link-btn" onclick="focusTracker()">https://safeguard-sos.app/track/sos_9841029</span>
+        </div>
+        <div class="wa-time">${timeStr} • Delivered</div>
+      `;
+      chat.appendChild(newBubble);
+      chat.scrollTop = chat.scrollHeight;
+
+      simulateMovement();
+    }
+
+    function focusTracker() {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function openGoogleMaps() {
+      window.open(`https://maps.google.com/?q=${lat},${lng}`, '_blank');
+    }
+
+    // Timer sync
+    setInterval(() => {
+      secondsAgo++;
+      document.getElementById('syncVal').innerText = `${secondsAgo}s ago`;
+    }, 1000);
+
+    window.onload = initMap;
+  </script>
+</body>
+</html>

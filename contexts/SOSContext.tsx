@@ -198,30 +198,63 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // Call native Android bridge for persistent service + recording + SMS + call
     if (Platform.OS === 'android') {
-      console.log('[SOS_DEBUG] Checking SEND_SMS runtime permission before native dispatch...');
-      checkSMSPermission().then((granted) => {
-        console.log(`[SOS_DEBUG] checkSMSPermission() result: ${granted}`);
-        setHasSMSPermission(granted);
-        if (!granted) {
-          console.log('[SOS_DEBUG] SMS permission not granted, requesting from user...');
-          requestEmergencyPermissions().then((res) => {
-            console.log(`[SOS_DEBUG] requestEmergencyPermissions() returned: ${res}`);
+      try {
+        console.log('[SOS_DEBUG] Checking SEND_SMS runtime permission before native dispatch...');
+        checkSMSPermission()
+          .then((granted) => {
+            console.log(`[SOS_DEBUG] checkSMSPermission() result: ${granted}`);
+            setHasSMSPermission(granted);
+            if (!granted) {
+              console.log('[SOS_DEBUG] SMS permission not granted, requesting from user...');
+              requestEmergencyPermissions()
+                .then((res) => {
+                  console.log(`[SOS_DEBUG] requestEmergencyPermissions() returned:`, res);
+                })
+                .catch((err) => {
+                  console.error('[SOS_DEBUG] requestEmergencyPermissions() error:', err);
+                });
+            }
+          })
+          .catch((err) => {
+            console.error('[SOS_DEBUG] checkSMSPermission() error:', err);
           });
-        }
-      });
 
-      StorageService.getContacts().then((contacts) => {
-        console.log(`[SOS_DEBUG] Retrieved ${contacts.length} contacts for SharedPreferences sync:`, JSON.stringify(contacts));
-        getCurrentLocation().then((loc) => {
-          console.log(`[SOS_DEBUG] Current location for sync: lat=${loc.lat}, lng=${loc.lng}`);
-          syncCachedSOSTriggerData(contacts, loc.lat, loc.lng).then(() => {
-            console.log('[SOS_DEBUG] syncCachedSOSTriggerData completed. Now invoking triggerNativeSOS...');
-            triggerNativeSOS(source)
-              .then((res) => console.log(`[SOS_DEBUG] triggerNativeSOS(${source}) returned:`, res))
-              .catch((err: any) => console.error('[SOS_DEBUG] Native SOS trigger error:', err));
+        // 1. Immediately invoke native SOS dispatch (non-blocking) so dispatch never stalls
+        triggerNativeSOS(source)
+          .then((res) => console.log(`[SOS_DEBUG] triggerNativeSOS(${source}) returned:`, res))
+          .catch((err: any) => console.error('[SOS_DEBUG] Native SOS trigger error:', err));
+
+        // 2. Best-effort parallel data sync (contacts + latest GPS) to SharedPreferences
+        StorageService.getContacts()
+          .then((contacts) => {
+            console.log(`[SOS_DEBUG] Retrieved ${contacts.length} contacts for SharedPreferences sync:`, JSON.stringify(contacts));
+            getCurrentLocation()
+              .then((loc) => {
+                console.log(`[SOS_DEBUG] Current location for sync: lat=${loc.lat}, lng=${loc.lng}`);
+                syncCachedSOSTriggerData(contacts, loc.lat, loc.lng)
+                  .then(() => {
+                    console.log('[SOS_DEBUG] syncCachedSOSTriggerData completed.');
+                  })
+                  .catch((err) => {
+                    console.error('[SOS_DEBUG] syncCachedSOSTriggerData error:', err);
+                  });
+              })
+              .catch((locErr) => {
+                console.error('[SOS_DEBUG] getCurrentLocation() error during sync:', locErr);
+                syncCachedSOSTriggerData(contacts).catch((e) =>
+                  console.error('[SOS_DEBUG] Fallback syncCachedSOSTriggerData error:', e)
+                );
+              });
+          })
+          .catch((contactsErr) => {
+            console.error('[SOS_DEBUG] StorageService.getContacts() error:', contactsErr);
           });
-        });
-      });
+      } catch (dispatchErr) {
+        console.error('[SOS_DEBUG] Top-level error in native dispatch block:', dispatchErr);
+        triggerNativeSOS(source).catch((e) =>
+          console.error('[SOS_DEBUG] Emergency fallback triggerNativeSOS error:', e)
+        );
+      }
     }
 
     if (Platform.OS !== 'web') {
@@ -239,34 +272,47 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const getCurrentLocation = async (): Promise<{ lat: number; lng: number; address: string }> => {
-    try {
-      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.geolocation) {
-        const webPosition = await new Promise<any>((resolve) => {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => resolve(pos),
-            () => resolve(null),
-            { timeout: 4000, enableHighAccuracy: true }
-          );
-        });
-        if (webPosition) {
-          const lat = webPosition.coords.latitude;
-          const lng = webPosition.coords.longitude;
-          return { lat, lng, address: `Live GPS (${lat.toFixed(4)}, ${lng.toFixed(4)})` };
+    const fallback = { lat: 37.7749, lng: -122.4194, address: 'Live GPS Location' };
+
+    const locationPromise = (async () => {
+      try {
+        if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.geolocation) {
+          const webPosition = await new Promise<any>((resolve) => {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => resolve(pos),
+              () => resolve(null),
+              { timeout: 3000, enableHighAccuracy: true }
+            );
+          });
+          if (webPosition) {
+            const lat = webPosition.coords.latitude;
+            const lng = webPosition.coords.longitude;
+            return { lat, lng, address: `Live GPS (${lat.toFixed(4)}, ${lng.toFixed(4)})` };
+          }
         }
+        const perm = await ExpoLocation.requestForegroundPermissionsAsync();
+        if (perm.status === 'granted') {
+          const loc = await ExpoLocation.getCurrentPositionAsync({ accuracy: ExpoLocation.Accuracy.Balanced });
+          return {
+            lat: loc.coords.latitude,
+            lng: loc.coords.longitude,
+            address: `Live GPS (${loc.coords.latitude.toFixed(4)}, ${loc.coords.longitude.toFixed(4)})`,
+          };
+        }
+      } catch (e) {
+        console.warn('[SOS_DEBUG] GPS location retrieval error:', e);
       }
-      const perm = await ExpoLocation.requestForegroundPermissionsAsync();
-      if (perm.status === 'granted') {
-        const loc = await ExpoLocation.getCurrentPositionAsync({ accuracy: ExpoLocation.Accuracy.High });
-        return {
-          lat: loc.coords.latitude,
-          lng: loc.coords.longitude,
-          address: `Live GPS (${loc.coords.latitude.toFixed(4)}, ${loc.coords.longitude.toFixed(4)})`,
-        };
-      }
-    } catch (e) {
-      console.warn('GPS location retrieval error:', e);
-    }
-    return { lat: 37.7749, lng: -122.4194, address: 'Live GPS Location' };
+      return fallback;
+    })();
+
+    const timeoutPromise = new Promise<{ lat: number; lng: number; address: string }>((resolve) =>
+      setTimeout(() => {
+        console.warn('[SOS_DEBUG] getCurrentLocation() timed out after 3000ms, using fallback.');
+        resolve(fallback);
+      }, 3000)
+    );
+
+    return Promise.race([locationPromise, timeoutPromise]);
   };
 
   const startContinuousLocationWatch = async (sosEventId: string) => {

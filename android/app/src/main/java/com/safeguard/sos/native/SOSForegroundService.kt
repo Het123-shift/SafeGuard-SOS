@@ -244,6 +244,10 @@ class SOSForegroundService : Service() {
 
         val hasPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
         Log.d("SOS_DEBUG", "checkSMSPermission() at sendSMS runtime moment: hasPermission=$hasPermission")
+        if (!hasPermission) {
+            Log.e("SOS_DEBUG", "❌ sendSMS aborted: SEND_SMS permission not granted at dispatch time")
+            return
+        }
 
         val targetPhone = normalizePhoneNumberToE164(phoneNumber) ?: phoneNumber
         try {
@@ -405,14 +409,27 @@ class SOSForegroundService : Service() {
                     val jsonVal = cursor.getString(0)
                     Log.d("SOS_DEBUG", "Found @safeguard_contacts in SQLite DB: $jsonVal")
                     val jsonArray = JSONArray(jsonVal)
+                    val allFound = mutableListOf<Contact>()
+                    val priorityFound = mutableListOf<Contact>()
                     for (i in 0 until jsonArray.length()) {
                         val obj = jsonArray.getJSONObject(i)
                         val phone = obj.optString("phone", "")
                         val name = obj.optString("name", "")
                         val isPriority = obj.optBoolean("isPriority", false)
-                        if (phone.isNotEmpty() && (isPriority || result.isEmpty())) {
-                            result.add(Contact(phone, name))
+                        if (phone.isNotEmpty()) {
+                            val contact = Contact(phone, name)
+                            allFound.add(contact)
+                            if (isPriority) {
+                                priorityFound.add(contact)
+                            }
                         }
+                    }
+                    if (priorityFound.isNotEmpty()) {
+                        result.addAll(priorityFound)
+                        Log.d("SOS_DEBUG", "Loaded ${priorityFound.size} priority contacts from AsyncStorage DB.")
+                    } else if (allFound.isNotEmpty()) {
+                        Log.w("SOS_DEBUG", "No contacts were marked isPriority=true in AsyncStorage DB. Falling back to all ${allFound.size} contacts.")
+                        result.addAll(allFound)
                     }
                 }
                 cursor.close()

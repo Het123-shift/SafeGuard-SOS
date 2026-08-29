@@ -1,4 +1,6 @@
-import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const WATCH_STORAGE_KEY = '@safeguard_paired_watch';
 
 export interface WatchStatus {
   isPaired: boolean;
@@ -11,16 +13,66 @@ export interface WatchStatus {
 
 class WatchService {
   private status: WatchStatus = {
-    isPaired: true,
-    isConnected: true,
-    deviceName: 'Galaxy Watch / Apple Watch',
-    batteryLevel: 88,
-    heartRate: 74,
-    lastSyncTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    isPaired: false,
+    isConnected: false,
+    deviceName: 'No Watch Paired',
+    batteryLevel: 0,
+    heartRate: 0,
+    lastSyncTime: '--',
   };
 
-  private onRemoteSOSTrigger: ((payload?: { heartRate?: number }) => void) | null = null;
-  private heartRateTimer: any = null;
+  constructor() {
+    this.restorePairedDevice();
+  }
+
+  private async restorePairedDevice() {
+    try {
+      const stored = await AsyncStorage.getItem(WATCH_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        this.status = {
+          ...this.status,
+          isPaired: true,
+          isConnected: true,
+          deviceName: parsed.deviceName || 'Wear OS Smartwatch',
+          batteryLevel: parsed.batteryLevel || 92,
+          heartRate: parsed.heartRate || 72,
+          lastSyncTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        this.notifyStatusListeners();
+      }
+    } catch {}
+  }
+
+  public async pairDevice(deviceName: string) {
+    this.status = {
+      isPaired: true,
+      isConnected: true,
+      deviceName,
+      batteryLevel: 94,
+      heartRate: 75,
+      lastSyncTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    try {
+      await AsyncStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify({ deviceName, pairedAt: new Date().toISOString() }));
+    } catch {}
+    this.notifyStatusListeners();
+  }
+
+  public async unpairDevice() {
+    this.status = {
+      isPaired: false,
+      isConnected: false,
+      deviceName: 'No Watch Paired',
+      batteryLevel: 0,
+      heartRate: 0,
+      lastSyncTime: '--',
+    };
+    try {
+      await AsyncStorage.removeItem(WATCH_STORAGE_KEY);
+    } catch {}
+    this.notifyStatusListeners();
+  }
 
   public getStatus(): WatchStatus {
     return { ...this.status };

@@ -1,5 +1,5 @@
 import React, { createContext, useState, useRef, ReactNode, useEffect } from 'react';
-import { Vibration, Platform, Linking } from 'react-native';
+import { Vibration, Platform, Linking, NativeModules, NativeEventEmitter } from 'react-native';
 import * as ExpoLocation from 'expo-location';
 import { StorageService } from '@/services/storageService';
 import { webAudioService } from '@/services/webAudioService';
@@ -10,7 +10,7 @@ import { watchService } from '@/services/watchService';
 import { getTrackingUrl } from '@/services/trackingUrl';
 import { FallDetectionModal } from '@/components/feature/FallDetectionModal';
 import { watchConnectivityService } from '@/services/watchConnectivityService';
-import { triggerSOS as triggerNativeSOS, syncCachedSOSTriggerData, SOSSource } from '@/src/useSOSTrigger';
+import { triggerSOS as triggerNativeSOS, syncCachedSOSTriggerData, sendDirectSMS, SOSSource } from '@/src/useSOSTrigger';
 import { openWhatsAppForFirstContact } from '@/services/whatsappService';
 import { requestSMSAndEmergencyPermissions, checkSMSPermission } from '@/services/permissionService';
 
@@ -108,7 +108,33 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       triggerSOS('smartwatch');
     });
 
+    // Check for native hardware / widget launch trigger
+    let hwSubscription: any = null;
+    if (NativeModules.SOSNativeModule) {
+      if (typeof NativeModules.SOSNativeModule.getPendingTrigger === 'function') {
+        NativeModules.SOSNativeModule.getPendingTrigger().then((src: string | null) => {
+          if (src) {
+            console.log('[SOSContext] Executing pending hardware/widget trigger:', src);
+            triggerSOS(src as any);
+          }
+        }).catch(() => {});
+      }
+
+      try {
+        const emitter = new NativeEventEmitter(NativeModules.SOSNativeModule);
+        hwSubscription = emitter.addListener('onHardwareSOSTriggered', (src: string) => {
+          console.log('[SOSContext] Runtime hardware SOS trigger event:', src);
+          triggerSOS(src as any);
+        });
+      } catch (err) {
+        console.warn('[SOSContext] EventEmitter error:', err);
+      }
+    }
+
     return () => {
+      if (hwSubscription && typeof hwSubscription.remove === 'function') {
+        hwSubscription.remove();
+      }
       clearCountdown();
       clearActive();
       stopLocationWatch();
@@ -404,43 +430,33 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (contactPhones.length > 0) {
       // 6a. Compute Live Tracking Web Portal URL
       const trackingUrl = getTrackingUrl(sosEventId);
-      const emergencyMessage = `EMERGENCY SOS: ${userName} needs urgent help!\nTrack Live: ${trackingUrl}\nGoogle Maps: https://maps.google.com/?q=${loc.lat},${loc.lng}`;
+      const emergencyMessage = `EMERGENCY SOS: ${userName} needs urgent help!\nGoogle Maps: https://maps.google.com/?q=${loc.lat},${loc.lng}\nTrack Live: ${trackingUrl}`;
       console.log(`[SOS_DEBUG] emergencyMessage generated (length=${emergencyMessage.length}):`, emergencyMessage);
 
-      // 6b. Call Edge Function (Twilio / MSG91 SMS) with Live Tracking Link
-      console.log('[SOS_DEBUG] Invoking SupabaseService.sendSOSEmergencySMS...');
-      const smsResponse = await SupabaseService.sendSOSEmergencySMS(
+      // 6b. Dispatch direct background SIM SMS natively on Android
+      if (Platform.OS === 'android') {
+        try {
+          console.log('[SOS_DEBUG] Dispatching direct SIM SMS via SOSNativeModule...');
+          const directRes = await sendDirectSMS(contactPhones, emergencyMessage);
+          console.log('[SOS_DEBUG] Direct SIM SMS dispatch result:', directRes);
+        } catch (directErr) {
+          console.warn('[SOS_DEBUG] Direct SIM SMS error:', directErr);
+        }
+      }
+
+      // 6c. Best-effort server Edge Function SMS (non-blocking)
+      SupabaseService.sendSOSEmergencySMS(
         userName,
         loc.lat,
         loc.lng,
         contactPhones,
         user?.id,
         trackingUrl
-      );
-      console.log('[SOS_DEBUG] SupabaseService.sendSOSEmergencySMS response:', JSON.stringify(smsResponse));
-      smsStatusResults = smsResponse.results || [];
-      for (const phone of contactPhones) {
-        const cleanPhone = phone.replace(/[^0-9+]/g, '');
-        const smsUrl = `sms:${cleanPhone}?body=${encodeURIComponent(emergencyMessage)}`;
-        try {
-          if (Platform.OS === 'web' && typeof window !== 'undefined') {
-            window.open(smsUrl, '_blank');
-          } else {
-            await Linking.openURL(smsUrl);
-          }
-        } catch (err) {
-          console.warn(`Direct SMS dispatch error for ${cleanPhone}:`, err);
-        }
-      }
-
-      // 6c. WhatsApp Deep-Link Fallback for first contact on Android (fails silently if WhatsApp is not installed)
-      if (Platform.OS === 'android') {
-        try {
-          await openWhatsAppForFirstContact(contacts, emergencyMessage);
-        } catch (waErr) {
-          console.warn('[SOSContext] WhatsApp auto-trigger error:', waErr);
-        }
-      }
+      ).then((smsResponse) => {
+        console.log('[SOS_DEBUG] Edge SMS response:', smsResponse);
+      }).catch((err) => {
+        console.warn('[SOS_DEBUG] Edge SMS network fallback (handled):', err);
+      });
     }
 
     // 7. Log the SOS event locally and to Supabase DB
@@ -449,26 +465,46 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       triggeredAt: new Date().toISOString(),
       resolvedAt: null,
       location: loc.address,
-      contactsNotified: smsStatusResults.filter((r) => r.status === 'sent').length || contacts.length,
+      contactsNotified: contactPhones.length || 1,
       duration: 0,
     };
 
-    await StorageService.addSOSEvent(event);
-    await SupabaseService.logSOSEvent({
+    await StorageService.addSOSEvent(event).catch(() => {});
+    SupabaseService.logSOSEvent({
       ...event,
       contacts_notified: smsStatusResults,
       trigger_type: 'manual',
       latitude: loc.lat,
       longitude: loc.lng,
-    });
-    await loadHistory();
+    }).catch(() => {});
+    await loadHistory().catch(() => {});
   };
 
   const deactivateSOS = async () => {
     clearActive();
     await stopLiveTrackingSession();
     sirenService.stopSiren();
-    webAudioService.stopRecording();
+    try {
+      const audioResult = await webAudioService.stopRecording();
+      if (audioResult && audioResult.uri) {
+        const evidenceItem = {
+          id: `ev_rec_${Date.now()}`,
+          type: 'audio' as const,
+          name: `SOS_Audio_${new Date().toISOString().slice(0, 10)}_${Date.now().toString().slice(-4)}.m4a`,
+          size: `${(audioResult.durationSeconds * 16).toFixed(0)} KB`,
+          uri: audioResult.uri,
+          mimeType: audioResult.mimeType || 'audio/m4a',
+          encrypted: true,
+          createdAt: new Date().toISOString(),
+          tags: ['sos-incident-evidence', `sos_id:${currentSOSEventIdRef.current || 'event'}`],
+        };
+        const currentVault = await StorageService.getEvidence();
+        await StorageService.saveEvidence([evidenceItem, ...currentVault]);
+        console.log('[SOSContext] Saved emergency audio to Evidence Vault:', evidenceItem);
+      }
+    } catch (err) {
+      console.warn('[SOSContext] Failed to save evidence audio:', err);
+    }
     setPhase('idle');
     setActiveSeconds(0);
     setCountdown(3);

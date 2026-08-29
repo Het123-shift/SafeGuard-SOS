@@ -1,49 +1,27 @@
 package com.safeguard.sos.native
 
 import android.accessibilityservice.AccessibilityService
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
+import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
-import android.util.Log
 
 /**
- * Detects rapid hardware key sequences while the device is locked/backgrounded:
- * 1. Volume button triple-press via KeyEvent filtering (preferred, highly reliable).
- * 2. Rapid screen on/off cycles (power button proxy) via BroadcastReceiver.
+ * Detects rapid Volume button triple-presses (Volume Down or Up x3 within 3500ms)
+ * to trigger emergency SOS.
  */
 class SOSAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "SOSAccessibilityService"
-        private const val PRESS_WINDOW_MS = 1500L   // all 3 presses must land inside this window
+        private const val PRESS_WINDOW_MS = 3500L
         private const val REQUIRED_PRESSES = 3
     }
 
-    private val powerPressTimestamps = mutableListOf<Long>()
     private val volumePressTimestamps = mutableListOf<Long>()
-
-    private val screenStateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                Intent.ACTION_SCREEN_OFF -> registerPowerPress()
-                Intent.ACTION_SCREEN_ON -> registerPowerPress()
-            }
-        }
-    }
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_OFF)
-            addAction(Intent.ACTION_SCREEN_ON)
-        }
-        registerReceiver(screenStateReceiver, filter)
-        Log.d(TAG, "SOS accessibility service connected — Volume and Power monitoring active")
-    }
 
     override fun onKeyEvent(event: KeyEvent?): Boolean {
         if (event == null) return false
@@ -55,50 +33,51 @@ class SOSAccessibilityService : AccessibilityService() {
                 volumePressTimestamps.add(now)
                 volumePressTimestamps.removeAll { now - it > PRESS_WINDOW_MS }
 
+                Log.d(TAG, "Hardware Volume key press recorded (${volumePressTimestamps.size}/$REQUIRED_PRESSES)")
+
                 if (volumePressTimestamps.size >= REQUIRED_PRESSES) {
                     volumePressTimestamps.clear()
-                    Log.d(TAG, "Hardware volume triple-press detected — launching SOS")
-                    triggerSOS("volume_button_triple_press")
+                    triggerHardwareSOS()
                 }
             }
         }
         return super.onKeyEvent(event)
     }
 
-    private fun registerPowerPress() {
-        val now = SystemClock.elapsedRealtime()
-        powerPressTimestamps.add(now)
-        powerPressTimestamps.removeAll { now - it > PRESS_WINDOW_MS }
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        Log.d(TAG, "SOSAccessibilityService CONNECTED and ACTIVE on device.")
+    }
 
-        if (powerPressTimestamps.size >= REQUIRED_PRESSES) {
-            powerPressTimestamps.clear()
-            Log.d(TAG, "Power button cycle triple-press detected — launching SOS")
-            triggerSOS("power_button_triple_press")
+    private fun triggerHardwareSOS() {
+        Log.d(TAG, "Volume triple-press confirmed! Opening app and triggering emergency SOS...")
+        
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val wakeLock = powerManager?.newWakeLock(
+                PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                "safeguardsos:wake_volume_sos"
+            )
+            wakeLock?.acquire(3000)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire wakelock: ${e.message}")
         }
-    }
 
-    private fun triggerSOS(source: String) {
-        val sosIntent = Intent(this, SOSForegroundService::class.java).apply {
-            action = SOSForegroundService.ACTION_TRIGGER_SOS
-            putExtra(SOSForegroundService.EXTRA_SOURCE, source)
+        val intent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            action = "TRIGGER_SOS_HARDWARE"
+            putExtra("source", "volume_button_triple_press")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
-        startForegroundService(sosIntent)
+        if (intent != null) {
+            startActivity(intent)
+        }
+
+        SOSNativeModule.notifyHardwareTrigger(this, "volume_button_triple_press")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Not used — required override
-    }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
     override fun onInterrupt() {
-        Log.d(TAG, "Accessibility service interrupted")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        try {
-            unregisterReceiver(screenStateReceiver)
-        } catch (e: IllegalArgumentException) {
-            // receiver was never registered — safe to ignore
-        }
+        Log.d(TAG, "SOSAccessibilityService interrupted.")
     }
 }

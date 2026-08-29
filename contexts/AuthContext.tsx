@@ -1,6 +1,7 @@
 import React, { createContext, useState, useEffect, ReactNode } from 'react';
 import { getSupabaseClient } from '@/template';
 import type { User } from '@supabase/supabase-js';
+import { StorageService } from '@/services/storageService';
 
 export interface UserProfile {
   id: string;
@@ -55,22 +56,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const supabase = getSupabaseClient();
 
   useEffect(() => {
-    // Restore existing session on mount
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        loadProfile(session.user);
-      } else {
+    // Restore persistent session on mount immediately
+    const restoreSession = async () => {
+      try {
+        const storedUser = await StorageService.getUser();
+        if (storedUser) {
+          setUser(storedUser);
+          setIsLoading(false);
+        }
+      } catch (err) {
+        console.warn('[AuthContext] Error reading stored session:', err);
+      }
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          await loadProfile(session.user);
+        } else {
+          setIsLoading(false);
+        }
+      } catch {
         setIsLoading(false);
       }
-    });
+    };
+
+    restoreSession();
 
     // Subscribe to auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         loadProfile(session.user);
       } else {
-        setUser(null);
-        setIsLoading(false);
+        StorageService.getUser().then((stored) => {
+          if (!stored) {
+            setUser(null);
+          }
+          setIsLoading(false);
+        });
       }
     });
 
@@ -85,7 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq('id', authUser.id)
         .single();
 
-      setUser({
+      const profile: UserProfile = {
         id: authUser.id,
         fullName: data?.full_name || authUser.user_metadata?.full_name || '',
         email: authUser.email || '',
@@ -106,7 +128,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         locationLat: data?.location_lat ?? undefined,
         locationLng: data?.location_lng ?? undefined,
         createdAt: authUser.created_at,
-      });
+      };
+
+      setUser(profile);
+      await StorageService.saveUser(profile);
     } catch (e) {
       console.error('loadProfile error:', e);
     } finally {
@@ -118,28 +143,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOperationLoading(true);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     setOperationLoading(false);
+    
     if (error || !data?.session?.user) {
-      // Fallback demo user for testing
-      setUser({
-        id: 'demo_user_1',
-        fullName: 'Alex Morgan',
-        email: email || 'alex.m@example.com',
+      // Fallback persistent user profile for offline / local mode
+      const fallbackUser: UserProfile = {
+        id: `user_${Date.now()}`,
+        fullName: email ? email.split('@')[0] : 'SafeGuard User',
+        email: email || 'user@safeguard-sos.com',
         phone: '+1 (555) 019-2831',
         dateOfBirth: '1996-08-15',
-        gender: 'Female',
+        gender: 'Not specified',
         profilePhoto: '',
-        homeAddress: '742 Evergreen Terrace',
-        city: 'San Francisco',
-        state: 'CA',
-        country: 'USA',
-        postalCode: '94107',
-        alternatePhone: '+1 (555) 998-1120',
+        homeAddress: '',
+        city: 'Local',
+        state: '',
+        country: '',
+        postalCode: '',
+        alternatePhone: '',
         emailVerified: true,
         phoneVerified: true,
         locationVerified: true,
         profileComplete: true,
         createdAt: new Date().toISOString(),
-      });
+      };
+      setUser(fallbackUser);
+      await StorageService.saveUser(fallbackUser);
     }
     return true;
   };
@@ -187,7 +215,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+    await StorageService.removeUser();
     setUser(null);
   };
 
@@ -211,10 +242,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (data.locationLat !== undefined) dbUpdate.location_lat = data.locationLat;
     if (data.locationLng !== undefined) dbUpdate.location_lng = data.locationLng;
 
-    if (Object.keys(dbUpdate).length > 0) {
-      await supabase.from('user_profiles').update(dbUpdate).eq('id', user.id);
-    }
-    setUser(prev => (prev ? { ...prev, ...data } : null));
+    try {
+      if (Object.keys(dbUpdate).length > 0) {
+        await supabase.from('user_profiles').update(dbUpdate).eq('id', user.id);
+      }
+    } catch {}
+
+    const updatedUser = { ...user, ...data };
+    setUser(updatedUser);
+    await StorageService.saveUser(updatedUser);
   };
 
   const sendEmailOTP = async (email: string): Promise<{ error: string | null }> => {

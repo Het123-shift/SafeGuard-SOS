@@ -6,13 +6,9 @@ import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
+import com.safeguard.sos.MainActivity
 import com.safeguard.sos.R
 
-/**
- * Home-screen widget: a single SOS button that fires the trigger directly,
- * with NO round-trip through MainActivity / the app UI. Wires the PendingIntent
- * straight to the foreground service to keep it instant.
- */
 class SOSWidgetProvider : AppWidgetProvider() {
 
     override fun onUpdate(
@@ -20,20 +16,24 @@ class SOSWidgetProvider : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray
     ) {
-        for (widgetId in appWidgetIds) {
-            val views = RemoteViews(context.packageName, R.layout.widget_sos)
-
-            val sosIntent = Intent(context, SOSForegroundService::class.java).apply {
-                action = SOSForegroundService.ACTION_TRIGGER_SOS
-                putExtra(SOSForegroundService.EXTRA_SOURCE, "home_screen_widget")
+        for (appWidgetId in appWidgetIds) {
+            val intent = Intent(context, MainActivity::class.java).apply {
+                action = "TRIGGER_SOS_WIDGET"
+                putExtra("source", "widget")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
-            val pendingIntent = PendingIntent.getService(
-                context, 0, sosIntent,
+
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                0,
+                intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
+            val views = RemoteViews(context.packageName, R.layout.widget_sos)
             views.setOnClickPendingIntent(R.id.widget_sos_button, pendingIntent)
-            appWidgetManager.updateAppWidget(widgetId, views)
+
+            appWidgetManager.updateAppWidget(appWidgetId, views)
         }
     }
 }

@@ -7,6 +7,7 @@ import { AuthProvider } from '@/contexts/AuthContext';
 import { ContactsProvider } from '@/contexts/ContactsContext';
 import { SOSProvider, SOSContext } from '@/contexts/SOSContext';
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import { ensureSOSServiceRunning } from '@/src/useSOSTrigger';
 
 function GlobalHotkeyHandler({ children }: { children: React.ReactNode }) {
@@ -52,6 +53,7 @@ function GlobalHotkeyHandler({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout() {
   useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
     ensureSOSServiceRunning().catch((err) => console.warn('Foreground service start error:', err));
   }, []);
 

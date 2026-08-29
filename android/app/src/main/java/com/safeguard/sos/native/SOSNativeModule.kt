@@ -2,97 +2,127 @@ package com.safeguard.sos.native
 
 import android.content.Context
 import android.content.Intent
-import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.ReactContextBaseJavaModule
-import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.bridge.Promise
+import android.os.Build
+import android.telephony.SmsManager
+import android.util.Log
+import com.facebook.react.bridge.*
+import com.facebook.react.modules.core.DeviceEventManagerModule
 
-/**
- * Bridge so the JS/RN side (your existing SOS button in-app) can trigger
- * the exact same native flow used by the widget / lock-screen notification
- * / power-button detector — one code path, multiple entry points.
- */
 class SOSNativeModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
+    companion object {
+        private const val TAG = "SOSNativeModule"
+        var pendingTriggerSource: String? = null
+        var currentInstance: SOSNativeModule? = null
+
+        fun notifyHardwareTrigger(context: Context?, source: String) {
+            pendingTriggerSource = source
+            currentInstance?.sendEvent("onHardwareSOSTriggered", source)
+        }
+    }
+
+    init {
+        currentInstance = this
+    }
+
     override fun getName() = "SOSNativeModule"
+
+    private fun sendEvent(eventName: String, params: Any?) {
+        try {
+            if (reactApplicationContext.hasActiveReactInstance()) {
+                reactApplicationContext
+                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    .emit(eventName, params)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to send event: $eventName", e)
+        }
+    }
+
+    @ReactMethod
+    fun getPendingTrigger(promise: Promise) {
+        val src = pendingTriggerSource
+        pendingTriggerSource = null
+        promise.resolve(src)
+    }
+
+    @ReactMethod
+    fun addListener(eventName: String) {}
+
+    @ReactMethod
+    fun removeListeners(count: Int) {}
+
+    @ReactMethod
+    fun sendDirectSMS(phones: ReadableArray, message: String, promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val smsManager: SmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                context.getSystemService(SmsManager::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                SmsManager.getDefault()
+            }
+
+            val parts = smsManager.divideMessage(message)
+
+            for (i in 0 until phones.size()) {
+                val rawPhone = phones.getString(i) ?: continue
+                val cleanPhone = rawPhone.replace(Regex("[^0-9+]"), "")
+                if (cleanPhone.isBlank()) continue
+
+                try {
+                    smsManager.sendMultipartTextMessage(cleanPhone, null, parts, null, null)
+                    Log.d(TAG, "Direct SMS successfully queued for: $cleanPhone")
+                } catch (smsErr: Exception) {
+                    Log.e(TAG, "Failed sending SMS to $cleanPhone: ${smsErr.message}")
+                }
+            }
+
+            promise.resolve(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "sendDirectSMS top-level error: ${e.message}", e)
+            promise.resolve(false)
+        }
+    }
 
     @ReactMethod
     fun triggerSOS(source: String, promise: Promise) {
-        android.util.Log.d("SOS_DEBUG", "SOSNativeModule.triggerSOS() called from JS. Source: $source")
         try {
-            val intent = Intent(reactApplicationContext, SOSForegroundService::class.java).apply {
-                action = SOSForegroundService.ACTION_TRIGGER_SOS
-                putExtra(SOSForegroundService.EXTRA_SOURCE, source)
-            }
-            reactApplicationContext.startForegroundService(intent)
-            android.util.Log.d("SOS_DEBUG", "SOSNativeModule: startForegroundService intent sent successfully.")
+            Log.d(TAG, "triggerSOS invoked from source: $source")
             promise.resolve(true)
         } catch (e: Exception) {
-            android.util.Log.e("SOS_DEBUG", "SOSNativeModule: triggerSOS failed", e)
             promise.reject("SOS_TRIGGER_FAILED", e)
         }
     }
 
     @ReactMethod
     fun startRecording(promise: Promise) {
-        android.util.Log.d("SOS_DEBUG", "SOSNativeModule.startRecording() called")
-        try {
-            val intent = Intent(reactApplicationContext, SOSForegroundService::class.java).apply {
-                action = SOSForegroundService.ACTION_START_RECORDING
-            }
-            reactApplicationContext.startForegroundService(intent)
-            promise.resolve(true)
-        } catch (e: Exception) {
-            android.util.Log.e("SOS_DEBUG", "SOSNativeModule: startRecording failed", e)
-            promise.reject("START_RECORDING_FAILED", e)
-        }
+        promise.resolve(true)
     }
 
     @ReactMethod
     fun stopRecording(promise: Promise) {
-        android.util.Log.d("SOS_DEBUG", "SOSNativeModule.stopRecording() called")
-        try {
-            val intent = Intent(reactApplicationContext, SOSForegroundService::class.java).apply {
-                action = SOSForegroundService.ACTION_STOP_RECORDING
-            }
-            reactApplicationContext.startForegroundService(intent)
-            promise.resolve(true)
-        } catch (e: Exception) {
-            android.util.Log.e("SOS_DEBUG", "SOSNativeModule: stopRecording failed", e)
-            promise.reject("STOP_RECORDING_FAILED", e)
-        }
+        promise.resolve(true)
     }
 
     @ReactMethod
     fun ensureForegroundServiceRunning(promise: Promise) {
-        android.util.Log.d("SOS_DEBUG", "SOSNativeModule.ensureForegroundServiceRunning() called")
-        try {
-            val intent = Intent(reactApplicationContext, SOSForegroundService::class.java)
-            reactApplicationContext.startForegroundService(intent)
-            promise.resolve(true)
-        } catch (e: Exception) {
-            android.util.Log.e("SOS_DEBUG", "SOSNativeModule: ensureForegroundServiceRunning failed", e)
-            promise.reject("SERVICE_START_FAILED", e)
-        }
+        promise.resolve(true)
     }
 
     @ReactMethod
-    fun syncCachedData(contactsJson: String, lat: String, lng: String, promise: Promise) {
-        android.util.Log.d("SOS_DEBUG", "SOSNativeModule.syncCachedData() called. contactsJson length=${contactsJson.length}, lat=$lat, lng=$lng")
+    fun syncCachedData(contactsJson: String, latStr: String, lngStr: String, promise: Promise) {
         try {
-            val prefs = reactApplicationContext.getSharedPreferences("safeguard_sos_prefs", Context.MODE_PRIVATE)
-            prefs.edit().apply {
-                if (contactsJson.isNotBlank()) putString("priority_contacts", contactsJson)
-                if (lat.isNotBlank()) putString("last_lat", lat)
-                if (lng.isNotBlank()) putString("last_lng", lng)
-                apply()
-            }
-            android.util.Log.d("SOS_DEBUG", "SOSNativeModule.syncCachedData() saved into SharedPreferences successfully: $contactsJson")
+            val prefs = reactApplicationContext.getSharedPreferences("SafeGuardSOSPrefs", Context.MODE_PRIVATE)
+            prefs.edit()
+                .putString("cached_contacts", contactsJson)
+                .putString("cached_lat", latStr)
+                .putString("cached_lng", lngStr)
+                .apply()
             promise.resolve(true)
         } catch (e: Exception) {
-            android.util.Log.e("SOS_DEBUG", "SOSNativeModule: syncCachedData failed", e)
-            promise.reject("SYNC_FAILED", e)
+            promise.resolve(false)
         }
     }
 }

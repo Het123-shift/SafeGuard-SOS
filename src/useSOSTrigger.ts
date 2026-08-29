@@ -19,6 +19,18 @@ export type SOSSource =
  * route through the same native SOSForegroundService — one trigger path,
  * multiple doors into it.
  */
+export async function sendDirectSMS(phones: string[], message: string): Promise<boolean> {
+  if (Platform.OS !== 'android' || !SOSNativeModule || !SOSNativeModule.sendDirectSMS) {
+    return false;
+  }
+  try {
+    return await SOSNativeModule.sendDirectSMS(phones, message);
+  } catch (e) {
+    console.warn('sendDirectSMS native call failed:', e);
+    return false;
+  }
+}
+
 export async function triggerSOS(source: SOSSource = 'in_app_button') {
   if (Platform.OS !== 'android') {
     return false;

@@ -91,8 +91,12 @@ We may update these terms at any time. Continued use of the app constitutes acce
 7. CONTACT
 For support: support@safeguard-sos.com`;
 
+import { biometricService } from '@/services/biometricService';
+import { useAlert } from '@/template';
+
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
+  const { showAlert } = useAlert();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [isLoaded, setIsLoaded] = useState(false);
   const [durationModal, setDurationModal] = useState(false);
@@ -104,7 +108,12 @@ export default function SettingsScreen() {
   const loadSettings = async () => {
     try {
       const saved = await AsyncStorage.getItem(SETTINGS_KEY);
-      if (saved) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
+      const isBioEnabled = await biometricService.isBiometricsEnabled();
+      if (saved) {
+        setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved), biometrics: isBioEnabled });
+      } else {
+        setSettings({ ...DEFAULT_SETTINGS, biometrics: isBioEnabled });
+      }
     } catch {}
     setIsLoaded(true);
   };
@@ -114,7 +123,27 @@ export default function SettingsScreen() {
     try { await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(updated)); } catch {}
   }, []);
 
-  const toggle = useCallback((key: keyof AppSettings) => {
+  const toggle = useCallback(async (key: keyof AppSettings) => {
+    if (key === 'biometrics') {
+      const targetState = !settings.biometrics;
+      if (targetState) {
+        const available = await biometricService.isHardwareAvailable();
+        if (!available) {
+          showAlert('Biometrics Unavailable', 'No enrolled biometric hardware (fingerprint or face) detected on this device.');
+          return;
+        }
+        const success = await biometricService.setBiometricsEnabled(true);
+        if (!success) {
+          showAlert('Authentication Required', 'Could not verify biometric identity.');
+          return;
+        }
+      } else {
+        await biometricService.setBiometricsEnabled(false);
+      }
+      save({ ...settings, biometrics: targetState });
+      return;
+    }
+
     save({ ...settings, [key]: !settings[key] });
   }, [settings, save]);
 
@@ -176,6 +205,35 @@ export default function SettingsScreen() {
                   </View>
                 </View>
               ))}
+            </SafeCard>
+          </View>
+
+          {/* Hardware Triggers */}
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Hardware Triggers</Text>
+            <SafeCard style={styles.card} padding={0}>
+              <Pressable
+                style={styles.row}
+                onPress={() => {
+                  if (Platform.OS === 'android') {
+                    Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS').catch(() => Linking.openSettings());
+                  } else {
+                    Linking.openSettings();
+                  }
+                }}
+              >
+                <View style={[styles.icon, { backgroundColor: `${Colors.primary}18` }]}>
+                  <MaterialIcons name="touch-app" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.info}>
+                  <Text style={styles.rowLabel}>Volume Button Triple-Press SOS</Text>
+                  <Text style={styles.rowDesc}>Triple-press Volume Down/Up to trigger emergency SOS</Text>
+                </View>
+                <View style={styles.valueRow}>
+                  <Text style={[styles.valueText, { color: Colors.primary, fontWeight: '700' }]}>Enable</Text>
+                  <MaterialIcons name="chevron-right" size={20} color={Colors.textTertiary} />
+                </View>
+              </Pressable>
             </SafeCard>
           </View>
 

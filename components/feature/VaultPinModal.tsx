@@ -3,6 +3,7 @@ import { View, Text, Modal, Pressable, StyleSheet, Animated } from 'react-native
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius, Shadows } from '@/constants/theme';
 import { StorageService, LockoutStatus } from '@/services/storageService';
+import { biometricService } from '@/services/biometricService';
 
 interface VaultPinModalProps {
   visible: boolean;
@@ -18,6 +19,7 @@ export function VaultPinModal({ visible, onSuccess, onClose }: VaultPinModalProp
   const [errorMsg, setErrorMsg] = useState('');
   const [lockoutStatus, setLockoutStatus] = useState<LockoutStatus>({ isLockedOut: false, remainingSeconds: 0 });
   const [shakeAnim] = useState(new Animated.Value(0));
+  const [isBioEnabled, setIsBioEnabled] = useState(false);
 
   useEffect(() => {
     if (visible) {
@@ -25,21 +27,16 @@ export function VaultPinModal({ visible, onSuccess, onClose }: VaultPinModalProp
     }
   }, [visible]);
 
-  useEffect(() => {
-    let timer: any = null;
-    if (lockoutStatus.isLockedOut && lockoutStatus.remainingSeconds > 0) {
-      timer = setInterval(() => {
-        setLockoutStatus((prev) => {
-          if (prev.remainingSeconds <= 1) {
-            clearInterval(timer);
-            return { isLockedOut: false, remainingSeconds: 0 };
-          }
-          return { ...prev, remainingSeconds: prev.remainingSeconds - 1 };
-        });
-      }, 1000);
+  const triggerBiometricAuth = async () => {
+    const enabled = await biometricService.isBiometricsEnabled();
+    setIsBioEnabled(enabled);
+    if (enabled) {
+      const res = await biometricService.authenticate('Unlock Safety Vault');
+      if (res.success) {
+        onSuccess();
+      }
     }
-    return () => clearInterval(timer);
-  }, [lockoutStatus.isLockedOut]);
+  };
 
   const checkPinAndLockout = async () => {
     const lockout = await StorageService.getLockoutStatus();
@@ -53,6 +50,7 @@ export function VaultPinModal({ visible, onSuccess, onClose }: VaultPinModalProp
       setStep('create');
     } else {
       setStep('enter');
+      triggerBiometricAuth();
     }
   };
 
@@ -184,8 +182,15 @@ export function VaultPinModal({ visible, onSuccess, onClose }: VaultPinModalProp
           {/* Keypad */}
           {!lockoutStatus.isLockedOut && (
             <View style={styles.keypad}>
-              {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'].map((key, i) => {
-                if (key === '') return <View key={i} style={styles.keyEmpty} />;
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'bio', '0', 'del'].map((key, i) => {
+                if (key === 'bio') {
+                  if (!isBioEnabled) return <View key={i} style={styles.keyEmpty} />;
+                  return (
+                    <Pressable key={i} style={styles.keyBtn} onPress={triggerBiometricAuth}>
+                      <MaterialIcons name="fingerprint" size={28} color={Colors.primary} />
+                    </Pressable>
+                  );
+                }
                 if (key === 'del') {
                   return (
                     <Pressable key={i} style={styles.keyBtn} onPress={handleDelete}>

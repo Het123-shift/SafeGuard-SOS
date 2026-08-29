@@ -1,26 +1,66 @@
-import React, { useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, Pressable, Platform } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, ScrollView, StyleSheet, Pressable, Platform, ActivityIndicator } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SafeCard } from '@/components/ui/SafeCard';
 import { SafeButton } from '@/components/ui/SafeButton';
 import { Colors, Typography, Spacing, Radius, Shadows } from '@/constants/theme';
-import { SupabaseService } from '@/services/supabaseService';
+import { watchService, WatchStatus } from '@/services/watchService';
+
+type PairingState = 'idle' | 'scanning' | 'discovered' | 'connecting' | 'paired' | 'failed';
+
+interface DiscoveredDevice {
+  id: string;
+  name: string;
+  type: 'wearos' | 'apple' | 'ble';
+  rssi: number;
+}
+
+const SAMPLE_DEVICES: DiscoveredDevice[] = [
+  { id: '1', name: 'Galaxy Watch 6 (BT)', type: 'wearos', rssi: -58 },
+  { id: '2', name: 'Pixel Watch 2', type: 'wearos', rssi: -72 },
+  { id: '3', name: 'Wear OS Device', type: 'wearos', rssi: -84 },
+];
 
 export default function WatchPairingScreen() {
   const insets = useSafeAreaInsets();
   const [activeWatchType, setActiveWatchType] = useState<'apple' | 'wearos' | 'web'>('wearos');
-  const [isScanning, setIsScanning] = useState(false);
-  const [isPaired, setIsPaired] = useState(true);
+  const [pairingState, setPairingState] = useState<PairingState>('idle');
+  const [discoveredDevices, setDiscoveredDevices] = useState<DiscoveredDevice[]>([]);
+  const [status, setStatus] = useState<WatchStatus>(watchService.getStatus());
   const [pairingCode] = useState('749-201');
 
-  const handleScan = () => {
-    setIsScanning(true);
+  useEffect(() => {
+    setStatus(watchService.getStatus());
+    const unsub = watchService.addStatusListener((s) => setStatus(s));
+    return unsub;
+  }, []);
+
+  const handleStartScan = () => {
+    setPairingState('scanning');
+    setDiscoveredDevices([]);
+
     setTimeout(() => {
-      setIsScanning(false);
-      setIsPaired(true);
-    }, 2500);
+      setDiscoveredDevices(SAMPLE_DEVICES);
+      setPairingState('discovered');
+    }, 2000);
   };
+
+  const handleConnectDevice = async (device: DiscoveredDevice) => {
+    setPairingState('connecting');
+    setTimeout(async () => {
+      await watchService.pairDevice(device.name);
+      setPairingState('paired');
+    }, 1500);
+  };
+
+  const handleUnpair = async () => {
+    await watchService.unpairDevice();
+    setPairingState('idle');
+    setDiscoveredDevices([]);
+  };
+
+  const isPaired = status.isPaired;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -37,7 +77,7 @@ export default function WatchPairingScreen() {
                 {isPaired ? 'Smartwatch Connected' : 'No Watch Paired'}
               </Text>
               <Text style={styles.statusSub}>
-                {isPaired ? 'Galaxy Watch 6 (Wear OS 4) • Bluetooth BLE Active' : 'Tap scan to discover nearby watches'}
+                {isPaired ? `${status.deviceName} • Bluetooth BLE Active` : 'Scan to discover nearby watches'}
               </Text>
             </View>
           </View>
@@ -46,7 +86,7 @@ export default function WatchPairingScreen() {
             <View style={styles.metricsRow}>
               <View style={styles.metricPill}>
                 <MaterialIcons name="favorite" size={16} color={Colors.primary} />
-                <Text style={styles.metricText}>Live HR Sync: <Text style={styles.bold}>Active</Text></Text>
+                <Text style={styles.metricText}>Live HR Sync: <Text style={styles.bold}>Active ({status.heartRate} BPM)</Text></Text>
               </View>
               <View style={styles.metricPill}>
                 <MaterialIcons name="vibration" size={16} color={Colors.warning} />
@@ -54,22 +94,60 @@ export default function WatchPairingScreen() {
               </View>
             </View>
           )}
+
+          {isPaired && (
+            <Pressable style={styles.unpairBtn} onPress={handleUnpair}>
+              <Text style={styles.unpairBtnText}>Disconnect & Unpair Device</Text>
+            </Pressable>
+          )}
         </SafeCard>
 
-        {/* Pairing Code Card */}
+        {/* Pairing Code & Discovery Card */}
         <SafeCard style={styles.codeCard}>
-          <Text style={styles.codeTitle}>Watch Companion Pairing Code</Text>
-          <Text style={styles.codeSub}>Open SafeGuard SOS on your watch and enter this code:</Text>
+          <Text style={styles.codeTitle}>Watch Companion Pairing</Text>
+          <Text style={styles.codeSub}>Open SafeGuard SOS on your watch or discover nearby BLE devices:</Text>
+          
           <View style={styles.codeDisplay}>
             <Text style={styles.codeText}>{pairingCode}</Text>
           </View>
-          <SafeButton
-            label={isScanning ? 'Scanning for Nearby Watches...' : 'Re-scan Bluetooth BLE Devices'}
-            onPress={handleScan}
-            loading={isScanning}
-            fullWidth
-            variant="secondary"
-          />
+
+          {pairingState === 'connecting' ? (
+            <View style={styles.connectingBox}>
+              <ActivityIndicator color={Colors.primary} size="small" />
+              <Text style={styles.connectingText}>Securing Bluetooth BLE connection...</Text>
+            </View>
+          ) : (
+            <SafeButton
+              label={pairingState === 'scanning' ? 'Scanning for Nearby Watches...' : 'Scan Bluetooth BLE Devices'}
+              onPress={handleStartScan}
+              loading={pairingState === 'scanning'}
+              fullWidth
+              variant="secondary"
+            />
+          )}
+
+          {/* Discovered Devices List */}
+          {pairingState === 'discovered' && discoveredDevices.length > 0 && (
+            <View style={styles.devicesList}>
+              <Text style={styles.devicesHeader}>Nearby Devices Discovered ({discoveredDevices.length})</Text>
+              {discoveredDevices.map((d) => (
+                <Pressable
+                  key={d.id}
+                  style={styles.deviceRow}
+                  onPress={() => handleConnectDevice(d)}
+                >
+                  <MaterialIcons name="watch" size={22} color={Colors.primary} />
+                  <View style={styles.deviceInfo}>
+                    <Text style={styles.deviceName}>{d.name}</Text>
+                    <Text style={styles.deviceSignal}>Signal: {d.rssi} dBm (Good)</Text>
+                  </View>
+                  <View style={styles.connectBadge}>
+                    <Text style={styles.connectBadgeText}>Connect</Text>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          )}
         </SafeCard>
 
         {/* Platform Selection Tabs */}
@@ -222,5 +300,74 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     color: Colors.textSecondary,
     lineHeight: 18,
+  },
+  unpairBtn: {
+    marginTop: Spacing.md,
+    paddingVertical: Spacing.sm,
+    backgroundColor: Colors.dangerSurface,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+  },
+  unpairBtnText: {
+    ...Typography.bodySmall,
+    fontWeight: '700',
+    color: Colors.danger,
+  },
+  connectingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+  },
+  connectingText: {
+    ...Typography.bodySmall,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
+  devicesList: {
+    width: '100%',
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+  },
+  devicesHeader: {
+    ...Typography.caption,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  deviceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceAlt,
+    padding: Spacing.md,
+    borderRadius: Radius.lg,
+    gap: Spacing.md,
+  },
+  deviceInfo: {
+    flex: 1,
+  },
+  deviceName: {
+    ...Typography.bodySmall,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  deviceSignal: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  connectBadge: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+  },
+  connectBadgeText: {
+    ...Typography.caption,
+    fontWeight: '700',
+    color: '#fff',
   },
 });

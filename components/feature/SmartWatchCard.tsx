@@ -58,11 +58,11 @@ export function SmartWatchCard() {
             />
           </View>
           <View>
-            <Text style={styles.title}>{status.deviceName}</Text>
+            <Text style={styles.title}>{status.isConnected ? status.deviceName : (status.isPaired ? `${status.deviceName} (Offline)` : 'No Smartwatch Paired')}</Text>
             <Pressable onPress={handleToggleConnection} style={styles.statusRow}>
               <View style={[styles.statusDot, { backgroundColor: status.isConnected ? Colors.success : Colors.danger }]} />
               <Text style={styles.statusText}>
-                {status.isConnected ? 'Connected • Paired' : 'Disconnected (Tap to toggle)'}
+                {status.isConnected ? 'Connected • BLE Active' : (status.isPaired ? 'Disconnected • Tap to reconnect' : 'Not Paired • Tap Pairing Guide')}
               </Text>
             </Pressable>
           </View>
@@ -72,7 +72,7 @@ export function SmartWatchCard() {
           onPress={() => router.push('/screens/watch-pairing' as any)}
         >
           <MaterialIcons name="settings-bluetooth" size={18} color={Colors.secondary} />
-          <Text style={styles.pairBtnText}>Pairing Guide</Text>
+          <Text style={styles.pairBtnText}>{status.isPaired ? 'Manage' : 'Pair Watch'}</Text>
         </Pressable>
       </View>
 

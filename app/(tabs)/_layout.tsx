@@ -21,6 +21,7 @@ export default function TabLayout() {
 
   return (
     <Tabs
+      initialRouteName="sos"
       screenOptions={{
         headerShown: false,
         tabBarStyle: {

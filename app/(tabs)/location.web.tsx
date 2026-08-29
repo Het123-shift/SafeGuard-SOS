@@ -11,6 +11,7 @@ import { useContacts } from '@/hooks/useContacts';
 import { SafeCard } from '@/components/ui/SafeCard';
 import { SafeButton } from '@/components/ui/SafeButton';
 import { Colors, Typography, Spacing, Radius, Shadows } from '@/constants/theme';
+import { sendDirectSMS } from '@/src/useSOSTrigger';
 
 type Duration = 15 | 30 | 60 | 0;
 type ViewMode = 'my-location' | 'recipient-view';
@@ -147,12 +148,24 @@ export default function LocationScreen() {
     }
   };
 
-  const handleToggleSharing = useCallback(() => {
+  const handleToggleSharing = useCallback(async () => {
     if (!isSharing) {
       if (contacts.length === 0) { showAlert('No Contacts', 'Add at least one trusted contact to share your location.'); return; }
       if (!myLocation) { showAlert('No Location', 'Enable location access first to share your position.'); return; }
       setIsSharing(true);
-      showAlert('Location Sharing Started', `Your live location is now being shared with ${contacts.length} contact(s) for ${selectedDuration === 0 ? 'unlimited time' : `${selectedDuration} minutes`}.`);
+      
+      const phoneNumbers = contacts.map(c => c.phone).filter(Boolean);
+      const mapsLink = `https://maps.google.com/?q=${myLocation.latitude},${myLocation.longitude}`;
+      const shareMsg = `SafeGuard Live Location: I am sharing my live location with you (${selectedDuration === 0 ? 'Until stopped' : `${selectedDuration} min`}): ${mapsLink}`;
+      
+      try {
+        console.log(`[LocationScreen] Sharing location via direct SIM SMS to ${phoneNumbers.length} contacts...`);
+        await sendDirectSMS(phoneNumbers, shareMsg);
+      } catch (err) {
+        console.warn('[LocationScreen] Direct SMS dispatch warning:', err);
+      }
+      
+      showAlert('Location Sharing Started', `Your live location link has been sent via SMS to ${phoneNumbers.length} contact(s).`);
     } else {
       setIsSharing(false);
       setViewMode('my-location');

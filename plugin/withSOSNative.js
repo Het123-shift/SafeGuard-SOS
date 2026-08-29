@@ -1,4 +1,22 @@
-const { withAndroidManifest, withStringsXml, AndroidConfig } = require('@expo/config-plugins');
+let configPlugins;
+try {
+  configPlugins = require('@expo/config-plugins');
+} catch (e) {
+  try {
+    const path = require('path');
+    const fs = require('fs');
+    const pnpmDir = path.join(__dirname, '../node_modules/.pnpm');
+    if (fs.existsSync(pnpmDir)) {
+      const match = fs.readdirSync(pnpmDir).find((d) => d.startsWith('@expo+config-plugins@'));
+      if (match) {
+        configPlugins = require(path.join(pnpmDir, match, 'node_modules/@expo/config-plugins'));
+      }
+    }
+  } catch (err) {
+    // fallback
+  }
+}
+const { withAndroidManifest, withStringsXml, AndroidConfig } = configPlugins || require('@expo/config-plugins');
 
 /**
  * Expo config plugin covering:

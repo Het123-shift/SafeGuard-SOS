@@ -11,6 +11,8 @@ import { getTrackingUrl } from '@/services/trackingUrl';
 import { FallDetectionModal } from '@/components/feature/FallDetectionModal';
 import { watchConnectivityService } from '@/services/watchConnectivityService';
 import { triggerSOS as triggerNativeSOS, syncCachedSOSTriggerData, SOSSource } from '@/src/useSOSTrigger';
+import { openWhatsAppForFirstContact } from '@/services/whatsappService';
+import { requestSMSAndEmergencyPermissions, checkSMSPermission } from '@/services/permissionService';
 
 type SOSPhase = 'idle' | 'arming' | 'countdown' | 'active' | 'cancelling';
 
@@ -21,6 +23,8 @@ interface SOSContextType {
   isSirenMuted: boolean;
   isFallModalVisible: boolean;
   activeSOSEventId: string | null;
+  hasSMSPermission: boolean;
+  requestEmergencyPermissions: () => Promise<boolean>;
   toggleSirenMute: () => void;
   startArming: () => void;
   cancelSOS: () => void;
@@ -47,6 +51,8 @@ export const SOSContext = createContext<SOSContextType>({
   isSirenMuted: false,
   isFallModalVisible: false,
   activeSOSEventId: null,
+  hasSMSPermission: true,
+  requestEmergencyPermissions: async () => true,
   toggleSirenMute: () => { },
   startArming: () => { },
   cancelSOS: () => { },
@@ -64,6 +70,7 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isSirenMuted, setIsSirenMuted] = useState(false);
   const [isFallModalVisible, setIsFallModalVisible] = useState(false);
   const [activeSOSEventId, setActiveSOSEventId] = useState<string | null>(null);
+  const [hasSMSPermission, setHasSMSPermission] = useState(true);
   const [sosHistory, setSosHistory] = useState<SOSEvent[]>([]);
 
   const countdownRef = useRef<any>(null);
@@ -71,10 +78,18 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const armStart = useRef<number>(0);
   const currentSOSEventIdRef = useRef<string | null>(null);
   const locationWatchRef = useRef<any>(null);
+  const autoExpireTimerRef = useRef<any>(null);
   const lastCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const fallSourceRef = useRef<SOSSource>('fall_detection');
 
+  const requestEmergencyPermissions = async (): Promise<boolean> => {
+    const res = await requestSMSAndEmergencyPermissions();
+    setHasSMSPermission(res.smsGranted);
+    return res.smsGranted;
+  };
+
   useEffect(() => {
+    checkSMSPermission().then(setHasSMSPermission);
     loadHistory();
 
     // Register fall/impact detection callback
@@ -97,6 +112,10 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       clearCountdown();
       clearActive();
       stopLocationWatch();
+      if (autoExpireTimerRef.current) {
+        clearTimeout(autoExpireTimerRef.current);
+        autoExpireTimerRef.current = null;
+      }
       motionService.stopFallDetection();
     };
   }, []);
@@ -107,6 +126,10 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const stopLocationWatch = () => {
+    if (autoExpireTimerRef.current) {
+      clearTimeout(autoExpireTimerRef.current);
+      autoExpireTimerRef.current = null;
+    }
     if (locationWatchRef.current) {
       if (typeof locationWatchRef.current === 'number' && typeof navigator !== 'undefined' && navigator.geolocation) {
         navigator.geolocation.clearWatch(locationWatchRef.current);
@@ -174,6 +197,12 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // Call native Android bridge for persistent service + recording + SMS + call
     if (Platform.OS === 'android') {
+      checkSMSPermission().then((granted) => {
+        setHasSMSPermission(granted);
+        if (!granted) {
+          requestEmergencyPermissions();
+        }
+      });
       triggerNativeSOS(source).catch((err: any) => console.warn('Native SOS trigger error:', err));
       StorageService.getContacts().then((contacts) => {
         getCurrentLocation().then((loc) => {
@@ -259,6 +288,12 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (err) {
       console.warn('Failed to start continuous location watch:', err);
     }
+
+    // Auto-expire tracking session after 2 hours to avoid battery drain
+    autoExpireTimerRef.current = setTimeout(() => {
+      console.log('[SOSContext] Auto-expiring live tracking session after 2 hours');
+      stopLiveTrackingSession();
+    }, 2 * 60 * 60 * 1000);
   };
 
   const activateSOS = async () => {
@@ -332,6 +367,15 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           console.warn(`Direct SMS dispatch error for ${cleanPhone}:`, err);
         }
       }
+
+      // 6c. WhatsApp Deep-Link Fallback for first contact on Android (fails silently if WhatsApp is not installed)
+      if (Platform.OS === 'android') {
+        try {
+          await openWhatsAppForFirstContact(contacts, emergencyMessage);
+        } catch (waErr) {
+          console.warn('[SOSContext] WhatsApp auto-trigger error:', waErr);
+        }
+      }
     }
 
     // 7. Log the SOS event locally and to Supabase DB
@@ -379,6 +423,8 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isSirenMuted,
         isFallModalVisible,
         activeSOSEventId,
+        hasSMSPermission,
+        requestEmergencyPermissions,
         toggleSirenMute,
         startArming,
         cancelSOS,

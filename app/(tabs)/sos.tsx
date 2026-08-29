@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Platform, Pressable, Share } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MaterialIcons } from '@expo/vector-icons';
+import { MaterialIcons, FontAwesome } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { SOSButton } from '@/components/feature/SOSButton';
 import { SafeCard } from '@/components/ui/SafeCard';
@@ -10,12 +10,21 @@ import { useAuth } from '@/hooks/useAuth';
 import { useSOS } from '@/hooks/useSOS';
 import { Colors, Typography, Spacing, Radius, Shadows } from '@/constants/theme';
 import { getTrackingUrl } from '@/services/trackingUrl';
+import { openWhatsAppDeepLink, normalizePhoneNumberToE164 } from '@/services/whatsappService';
 
 export default function SOSScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { contacts } = useContacts();
-  const { phase, activeSeconds, isSirenMuted, toggleSirenMute, activeSOSEventId } = useSOS();
+  const {
+    phase,
+    activeSeconds,
+    isSirenMuted,
+    toggleSirenMute,
+    activeSOSEventId,
+    hasSMSPermission,
+    requestEmergencyPermissions,
+  } = useSOS();
   const [copied, setCopied] = useState(false);
 
   const formatTime = (secs: number) => {
@@ -48,6 +57,12 @@ export default function SOSScreen() {
     }
   };
 
+  const emergencyMessage = `🚨 EMERGENCY SOS ALERT! ${user?.fullName || 'User'} needs urgent help!\nTrack Live: ${trackingUrl}`;
+
+  const handleSendWhatsApp = async (phone: string) => {
+    await openWhatsAppDeepLink(phone, emergencyMessage);
+  };
+
   const SOS_STEPS = [
     { icon: 'timer' as const, label: '3-second countdown', color: Colors.warning },
     { icon: 'volume-up' as const, label: 'Audible emergency siren', color: Colors.primary },
@@ -76,43 +91,57 @@ export default function SOSScreen() {
         </Pressable>
       </View>
 
+      {Platform.OS === 'android' && !hasSMSPermission && (
+        <Pressable style={styles.permissionWarningBanner} onPress={requestEmergencyPermissions}>
+          <MaterialIcons name="sms-failed" size={20} color="#DC2626" />
+          <View style={styles.permissionWarningInfo}>
+            <Text style={styles.permissionWarningTitle}>SMS Permission Required</Text>
+            <Text style={styles.permissionWarningDesc}>
+              Tap to allow SafeGuard to automatically dispatch background emergency SMS to your family contacts.
+            </Text>
+          </View>
+          <MaterialIcons name="chevron-right" size={20} color="#DC2626" />
+        </Pressable>
+      )}
+
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         {phase === 'active' ? (
-          <SafeCard variant="danger" style={styles.activeCard}>
-            <View style={styles.activeBadgeRow}>
-              <View style={styles.activeBadge}>
-                <View style={styles.activeDot} />
-                <Text style={styles.activeLabel}>SOS ACTIVE</Text>
+          <>
+            <SafeCard variant="danger" style={styles.activeCard}>
+              <View style={styles.activeBadgeRow}>
+                <View style={styles.activeBadge}>
+                  <View style={styles.activeDot} />
+                  <Text style={styles.activeLabel}>SOS ACTIVE</Text>
+                </View>
+                <View style={styles.recordingPill}>
+                  <MaterialIcons name="fiber-manual-record" size={12} color={Colors.danger} />
+                  <Text style={styles.recordingText}>Recording Audio</Text>
+                </View>
               </View>
-              <View style={styles.recordingPill}>
-                <MaterialIcons name="fiber-manual-record" size={12} color={Colors.danger} />
-                <Text style={styles.recordingText}>Recording Audio</Text>
-              </View>
-            </View>
 
-            <Text style={styles.activeTime}>{formatTime(activeSeconds)}</Text>
-            <Text style={styles.activeDesc}>Emergency alerts & live location sent to {contacts.length} contact(s)</Text>
+              <Text style={styles.activeTime}>{formatTime(activeSeconds)}</Text>
+              <Text style={styles.activeDesc}>Emergency alerts & live location sent to {contacts.length} contact(s)</Text>
 
-            <View style={styles.activeInfo}>
-              <View style={styles.infoRow}>
-                <MaterialIcons name="person" size={16} color={Colors.danger} />
-                <Text style={styles.infoText}>{user?.fullName || 'User'}</Text>
+              <View style={styles.activeInfo}>
+                <View style={styles.infoRow}>
+                  <MaterialIcons name="person" size={16} color={Colors.danger} />
+                  <Text style={styles.infoText}>{user?.fullName || 'User'}</Text>
+                </View>
+                <View style={styles.infoRow}>
+                  <MaterialIcons name="location-on" size={16} color={Colors.danger} />
+                  <Text style={styles.infoText}>Live GPS Tracking Active</Text>
+                </View>
+                <View style={styles.infoRow}>
+                  <MaterialIcons name="sms" size={16} color={Colors.danger} />
+                  <Text style={styles.infoText}>Silent Emergency SMS Sent to Priority Contacts</Text>
+                </View>
               </View>
-              <View style={styles.infoRow}>
-                <MaterialIcons name="location-on" size={16} color={Colors.danger} />
-                <Text style={styles.infoText}>Live Satellite GPS Tracking Active</Text>
-              </View>
-              <View style={styles.infoRow}>
-                <MaterialIcons name="mic" size={16} color={Colors.danger} />
-                <Text style={styles.infoText}>Microphone active — Saving to Evidence Vault</Text>
-              </View>
-            </View>
+            </SafeCard>
 
-            {/* Live Tracking Link Section */}
             <View style={styles.trackingCard}>
               <View style={styles.trackingHeader}>
-                <MaterialIcons name="radar" size={18} color={Colors.danger} />
-                <Text style={styles.trackingTitle}>Live Public Tracking Link</Text>
+                <MaterialIcons name="share-location" size={18} color={Colors.danger} />
+                <Text style={styles.trackingTitle}>Live Responder Tracking Link</Text>
               </View>
               <Text style={styles.trackingUrlText} numberOfLines={2}>
                 {trackingUrl}
@@ -138,7 +167,66 @@ export default function SOSScreen() {
                 </Pressable>
               </View>
             </View>
-          </SafeCard>
+
+            {contacts.length > 0 && (
+              <SafeCard style={styles.whatsappCard}>
+                <View style={styles.whatsappHeader}>
+                  <View style={styles.whatsappIconCircle}>
+                    <FontAwesome name="whatsapp" size={20} color="#fff" />
+                  </View>
+                  <View style={styles.whatsappHeaderTexts}>
+                    <Text style={styles.whatsappTitle}>WhatsApp Direct Fallback</Text>
+                    <Text style={styles.whatsappSubtitle}>
+                      Tap Send in WhatsApp to notify this contact (SMS was already sent automatically).
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.whatsappList}>
+                  {contacts.map((c, index) => {
+                    const normalized = normalizePhoneNumberToE164(c.phone);
+                    const isFirstContact = index === 0;
+
+                    return (
+                      <View key={c.id} style={styles.whatsappRow}>
+                        <View style={styles.whatsappContactInfo}>
+                          <View style={styles.whatsappNameRow}>
+                            <Text style={styles.whatsappContactName}>{c.name}</Text>
+                            {c.isPriority ? (
+                              <View style={styles.priorityBadge}>
+                                <MaterialIcons name="star" size={10} color="#CA8A04" />
+                                <Text style={styles.priorityText}>Priority</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          <Text style={styles.whatsappContactPhone}>
+                            {c.phone} {normalized ? `(+${normalized})` : '(Invalid number)'}
+                          </Text>
+                          {isFirstContact ? (
+                            <Text style={styles.autoOpenedHint}>Auto-opened on trigger</Text>
+                          ) : null}
+                        </View>
+
+                        <Pressable
+                          style={[
+                            styles.whatsappBtn,
+                            !normalized && styles.whatsappBtnDisabled,
+                          ]}
+                          onPress={() => normalized && handleSendWhatsApp(c.phone)}
+                          disabled={!normalized}
+                        >
+                          <FontAwesome name="whatsapp" size={16} color="#fff" />
+                          <Text style={styles.whatsappBtnText}>
+                            {isFirstContact ? 'Re-open' : 'Send'}
+                          </Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              </SafeCard>
+            )}
+          </>
         ) : null}
 
         {/* SOS Button */}
@@ -349,4 +437,115 @@ const styles = StyleSheet.create({
     borderRadius: Radius.full,
   },
   priorityText: { ...Typography.caption, color: '#92400E', fontWeight: '600' },
+  whatsappCard: {
+    marginBottom: Spacing.base,
+    borderWidth: 1,
+    borderColor: '#25D36640',
+    backgroundColor: '#0F2618',
+  },
+  whatsappHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  whatsappIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#25D366',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  whatsappHeaderTexts: {
+    flex: 1,
+  },
+  whatsappTitle: {
+    ...Typography.h4,
+    color: '#E6FFFA',
+  },
+  whatsappSubtitle: {
+    ...Typography.caption,
+    color: '#9AE6B4',
+    marginTop: 2,
+  },
+  whatsappList: {
+    gap: Spacing.sm,
+  },
+  whatsappRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#153622',
+    padding: Spacing.sm,
+    borderRadius: Radius.md,
+    gap: Spacing.sm,
+  },
+  whatsappContactInfo: {
+    flex: 1,
+  },
+  whatsappNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  whatsappContactName: {
+    ...Typography.bodySmall,
+    color: '#fff',
+    fontWeight: '600',
+  },
+  whatsappContactPhone: {
+    ...Typography.caption,
+    color: '#A0AEC0',
+    marginTop: 1,
+  },
+  autoOpenedHint: {
+    fontSize: 10,
+    color: '#68D391',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  whatsappBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#25D366',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: Radius.full,
+  },
+  whatsappBtnDisabled: {
+    backgroundColor: '#4A5568',
+    opacity: 0.6,
+  },
+  whatsappBtnText: {
+    ...Typography.buttonSmall,
+    color: '#fff',
+    fontWeight: '700',
+  },
+  permissionWarningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FCA5A5',
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    marginHorizontal: Spacing.base,
+    marginBottom: Spacing.sm,
+  },
+  permissionWarningInfo: {
+    flex: 1,
+  },
+  permissionWarningTitle: {
+    ...Typography.label,
+    color: '#DC2626',
+    fontWeight: '700',
+  },
+  permissionWarningDesc: {
+    ...Typography.caption,
+    color: '#991B1B',
+    marginTop: 2,
+  },
 });

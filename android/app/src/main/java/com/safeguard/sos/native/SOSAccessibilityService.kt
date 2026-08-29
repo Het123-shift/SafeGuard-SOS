@@ -6,34 +6,31 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.util.Log
 
 /**
- * Detects rapid screen on/off cycles (triple power-button press) while the
- * device is locked/screen-off. Android does NOT expose raw hardware power-
- * button KeyEvents to third-party apps — SCREEN_ON/SCREEN_OFF broadcasts are
- * the only legitimate signal available, so we count those instead.
- *
- * This only works while the OS is running (screen off / locked). A device
- * that is fully powered down cannot be intercepted by any app — there is no
- * software running to catch the button press.
+ * Detects rapid hardware key sequences while the device is locked/backgrounded:
+ * 1. Volume button triple-press via KeyEvent filtering (preferred, highly reliable).
+ * 2. Rapid screen on/off cycles (power button proxy) via BroadcastReceiver.
  */
 class SOSAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "SOSAccessibilityService"
-        private const val PRESS_WINDOW_MS = 2000L   // all 3 presses must land inside this window
+        private const val PRESS_WINDOW_MS = 1500L   // all 3 presses must land inside this window
         private const val REQUIRED_PRESSES = 3
     }
 
-    private val pressTimestamps = mutableListOf<Long>()
+    private val powerPressTimestamps = mutableListOf<Long>()
+    private val volumePressTimestamps = mutableListOf<Long>()
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_OFF -> registerPress()
-                Intent.ACTION_SCREEN_ON -> registerPress()
+                Intent.ACTION_SCREEN_OFF -> registerPowerPress()
+                Intent.ACTION_SCREEN_ON -> registerPowerPress()
             }
         }
     }
@@ -45,37 +42,51 @@ class SOSAccessibilityService : AccessibilityService() {
             addAction(Intent.ACTION_SCREEN_ON)
         }
         registerReceiver(screenStateReceiver, filter)
-        Log.d(TAG, "SOS accessibility service connected")
+        Log.d(TAG, "SOS accessibility service connected — Volume and Power monitoring active")
     }
 
-    private fun registerPress() {
-        val now = SystemClock.elapsedRealtime()
-        pressTimestamps.add(now)
-        // drop anything outside the rolling window
-        pressTimestamps.removeAll { now - it > PRESS_WINDOW_MS }
+    override fun onKeyEvent(event: KeyEvent?): Boolean {
+        if (event == null) return false
 
-        if (pressTimestamps.size >= REQUIRED_PRESSES) {
-            pressTimestamps.clear()
-            triggerSOSWithRecording()
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            val keyCode = event.keyCode
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                val now = SystemClock.elapsedRealtime()
+                volumePressTimestamps.add(now)
+                volumePressTimestamps.removeAll { now - it > PRESS_WINDOW_MS }
+
+                if (volumePressTimestamps.size >= REQUIRED_PRESSES) {
+                    volumePressTimestamps.clear()
+                    Log.d(TAG, "Hardware volume triple-press detected — launching SOS")
+                    triggerSOS("volume_button_triple_press")
+                }
+            }
+        }
+        return super.onKeyEvent(event)
+    }
+
+    private fun registerPowerPress() {
+        val now = SystemClock.elapsedRealtime()
+        powerPressTimestamps.add(now)
+        powerPressTimestamps.removeAll { now - it > PRESS_WINDOW_MS }
+
+        if (powerPressTimestamps.size >= REQUIRED_PRESSES) {
+            powerPressTimestamps.clear()
+            Log.d(TAG, "Power button cycle triple-press detected — launching SOS")
+            triggerSOS("power_button_triple_press")
         }
     }
 
-    private fun triggerSOSWithRecording() {
-        Log.d(TAG, "Triple press detected — firing SOS trigger")
-
-        // Recording is started inside SOSForegroundService.triggerSOS()
-        // itself for every source — no need to fire a separate recording
-        // intent here.
+    private fun triggerSOS(source: String) {
         val sosIntent = Intent(this, SOSForegroundService::class.java).apply {
             action = SOSForegroundService.ACTION_TRIGGER_SOS
-            putExtra(SOSForegroundService.EXTRA_SOURCE, "power_button_triple_press")
+            putExtra(SOSForegroundService.EXTRA_SOURCE, source)
         }
         startForegroundService(sosIntent)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Not used — we only need the service alive for the screen broadcasts.
-        // Required override, intentionally empty.
+        // Not used — required override
     }
 
     override fun onInterrupt() {

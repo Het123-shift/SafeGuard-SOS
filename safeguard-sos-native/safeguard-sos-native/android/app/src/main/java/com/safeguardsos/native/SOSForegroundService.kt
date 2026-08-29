@@ -110,24 +110,20 @@ class SOSForegroundService : Service() {
     // ---------- SOS trigger: call + SMS per contact ----------
 
     private fun triggerSOS(source: String) {
-        // Start recording FIRST, before anything else — every trigger
-        // source lands here, so this is the one place that needs to fire
-        // it. Fine to call even if already recording; startVoiceRecording()
-        // no-ops if a recorder instance already exists.
+        // Start recording FIRST, before anything else
         startVoiceRecording()
 
-        // TODO: replace with your real contacts fetch (Supabase/OnSpace `contacts` table,
-        // already cached locally so this works offline too).
         val contacts = getPriorityContacts()
-        val locationLink = getLastKnownLocationLink() // TODO: wire to your GPS/cache layer
+        val locationLink = getLastKnownLocationLink()
+        val alertMessage = buildAlertMessage(locationLink)
 
         for (contact in contacts) {
             callContact(contact.phoneNumber)
-            sendSMS(contact.phoneNumber, buildAlertMessage(locationLink))
-            // small delay between contacts to avoid Android rate-limiting
-            // rapid sequential SmsManager calls — handle via WorkManager/
-            // Handler.postDelayed in production rather than Thread.sleep.
+            sendSMS(contact.phoneNumber, alertMessage)
         }
+
+        // WhatsApp fallback for first contact (deep-link wa.me via ACTION_VIEW)
+        openWhatsAppForFirstContact(contacts, alertMessage)
 
         // Log the event centrally so it's auditable even if a single send fails.
         logSOSEvent(source, contacts.size)
@@ -155,6 +151,45 @@ class SOSForegroundService : Service() {
             smsManager.sendMultipartTextMessage(phoneNumber, null, parts, null, null)
         } catch (e: Exception) {
             // TODO: queue for retry — see offline-retry note from earlier planning.
+        }
+    }
+
+    private fun normalizePhoneNumberToE164(phone: String, defaultCountryCode: String = "91"): String? {
+        if (phone.isBlank()) return null
+        var cleaned = phone.replace(Regex("[^0-9+]"), "")
+        if (cleaned.startsWith("+")) {
+            cleaned = cleaned.substring(1)
+        } else if (cleaned.startsWith("0") && cleaned.length == 11) {
+            cleaned = defaultCountryCode + cleaned.substring(1)
+        } else if (cleaned.length == 10) {
+            cleaned = defaultCountryCode + cleaned
+        }
+
+        return if (cleaned.matches(Regex("^[0-9]{10,15}$"))) {
+            cleaned
+        } else {
+            android.util.Log.w("SOSForegroundService", "Contact number failed E.164 normalization: $phone -> $cleaned")
+            null
+        }
+    }
+
+    private fun openWhatsAppForFirstContact(contacts: List<Contact>, message: String) {
+        for (contact in contacts) {
+            val normalized = normalizePhoneNumberToE164(contact.phoneNumber) ?: continue
+            try {
+                val encodedMsg = java.net.URLEncoder.encode(message, "UTF-8")
+                val url = "https://wa.me/$normalized?text=$encodedMsg"
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    data = android.net.Uri.parse(url)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+                android.util.Log.d("SOSForegroundService", "WhatsApp deep-link opened for first contact: $normalized")
+                break // Only open the first contact's WhatsApp chat automatically to avoid stacked UX
+            } catch (e: Exception) {
+                // If WhatsApp is not installed or intent fails, log and fail silently
+                android.util.Log.w("SOSForegroundService", "WhatsApp not installed or intent failed for $normalized: ${e.message}")
+            }
         }
     }
 

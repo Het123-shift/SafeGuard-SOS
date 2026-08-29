@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, ScrollView, Switch, Pressable, StyleSheet, Modal, Platform,
+  View, Text, ScrollView, Switch, Pressable, StyleSheet, Modal, Platform, Linking,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -211,6 +211,47 @@ export default function SettingsScreen() {
                   <Text style={[styles.valueText, { color: Colors.success, fontWeight: '700' }]}>Paired</Text>
                 </View>
               </View>
+            </SafeCard>
+          </View>
+
+          {/* Hardware & Lock-Screen Trigger */}
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Hardware & Lock-Screen Trigger</Text>
+            <SafeCard style={styles.card} padding={0}>
+              <View style={styles.row}>
+                <View style={[styles.icon, { backgroundColor: `${Colors.danger}18` }]}>
+                  <MaterialIcons name="phone-android" size={20} color={Colors.danger} />
+                </View>
+                <View style={styles.info}>
+                  <Text style={styles.rowLabel}>Hardware Volume / Power 3x</Text>
+                  <Text style={styles.rowDesc}>Triple-press volume or power button while locked to trigger SOS</Text>
+                </View>
+              </View>
+              <View style={styles.divider} />
+              <Pressable
+                style={styles.row}
+                onPress={() => {
+                  if (Platform.OS === 'android') {
+                    Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS').catch(() => {
+                      Linking.openSettings();
+                    });
+                  } else {
+                    Linking.openSettings();
+                  }
+                }}
+              >
+                <View style={[styles.icon, { backgroundColor: `${Colors.secondary}18` }]}>
+                  <MaterialIcons name="accessibility" size={20} color={Colors.secondary} />
+                </View>
+                <View style={styles.info}>
+                  <Text style={styles.rowLabel}>Accessibility Service Setup</Text>
+                  <Text style={styles.rowDesc}>Enable SafeGuard in Android Accessibility settings</Text>
+                </View>
+                <View style={styles.valueRow}>
+                  <Text style={[styles.valueText, { color: Colors.secondary, fontWeight: '600' }]}>Configure</Text>
+                  <MaterialIcons name="chevron-right" size={18} color={Colors.textTertiary} />
+                </View>
+              </Pressable>
             </SafeCard>
           </View>
 

@@ -19,7 +19,7 @@ class WatchService {
     lastSyncTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
 
-  private onRemoteSOSTrigger: (() => void) | null = null;
+  private onRemoteSOSTrigger: ((payload?: { heartRate?: number }) => void) | null = null;
   private heartRateTimer: any = null;
 
   public getStatus(): WatchStatus {
@@ -29,29 +29,60 @@ class WatchService {
   public setPaired(paired: boolean) {
     this.status.isPaired = paired;
     this.status.isConnected = paired;
+    this.notifyStatusListeners();
   }
 
-  public registerRemoteSOSTrigger(callback: () => void) {
+  public setConnected(connected: boolean) {
+    this.status.isConnected = connected;
+    this.notifyStatusListeners();
+  }
+
+  private statusListeners: Array<(status: WatchStatus) => void> = [];
+
+  public addStatusListener(listener: (status: WatchStatus) => void): () => void {
+    this.statusListeners.push(listener);
+    return () => {
+      this.statusListeners = this.statusListeners.filter((l) => l !== listener);
+    };
+  }
+
+  private notifyStatusListeners() {
+    for (const listener of this.statusListeners) {
+      listener({ ...this.status });
+    }
+  }
+
+  public registerRemoteSOSTrigger(callback: (payload?: { heartRate?: number }) => void) {
     this.onRemoteSOSTrigger = callback;
   }
 
-  public registerSOSTriggerCallback(callback: () => void) {
+  public registerSOSTriggerCallback(callback: (payload?: { heartRate?: number }) => void) {
     this.registerRemoteSOSTrigger(callback);
   }
 
-  // Simulate remote watch SOS button press
-  public triggerWatchSOS() {
-    if (this.onRemoteSOSTrigger) {
-      this.onRemoteSOSTrigger();
+  // Trigger remote watch SOS button press with connection check
+  public triggerWatchSOS(): { success: boolean; error?: string } {
+    if (!this.status.isConnected) {
+      console.warn('[WatchService] Cannot trigger SOS: Watch is disconnected from phone');
+      return { success: false, error: 'Wearable is disconnected. Reconnect Bluetooth to trigger SOS.' };
     }
+    if (this.onRemoteSOSTrigger) {
+      this.onRemoteSOSTrigger({ heartRate: this.status.heartRate });
+    }
+    return { success: true };
   }
 
   // Simulate heart rate panic spike detection (> 130 BPM)
-  public simulateHeartRateSpike() {
+  public simulateHeartRateSpike(): { success: boolean; error?: string } {
+    if (!this.status.isConnected) {
+      console.warn('[WatchService] Cannot trigger panic spike: Watch is disconnected');
+      return { success: false, error: 'Wearable is disconnected.' };
+    }
     this.status.heartRate = 138;
     if (this.onRemoteSOSTrigger) {
-      this.onRemoteSOSTrigger();
+      this.onRemoteSOSTrigger({ heartRate: 138 });
     }
+    return { success: true };
   }
 
   public startHeartRateMonitoring() {

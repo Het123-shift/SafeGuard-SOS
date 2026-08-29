@@ -5,8 +5,10 @@ const { SOSNativeModule } = NativeModules;
 export type SOSSource =
   | 'in_app_button'
   | 'home_screen_widget'
+  | 'quick_settings_tile'
   | 'lock_screen_notification'
   | 'power_button_triple_press'
+  | 'volume_button_triple_press'
   | 'fall_detection'
   | 'impact_detection'
   | 'smartwatch';

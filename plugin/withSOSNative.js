@@ -110,6 +110,27 @@ module.exports = function withSOSNative(config) {
       });
     }
 
+    // ---- Quick Settings Tile Service ----
+    const tileServiceExists = mainApplication.service.some(
+      (s) => s.$['android:name'] === '.native.SOSTileService'
+    );
+    if (!tileServiceExists) {
+      mainApplication.service.push({
+        $: {
+          'android:name': '.native.SOSTileService',
+          'android:icon': '@android:drawable/ic_dialog_alert',
+          'android:label': 'SafeGuard SOS',
+          'android:permission': 'android.permission.BIND_QUICK_SETTINGS_TILE',
+          'android:exported': 'true',
+        },
+        'intent-filter': [
+          {
+            action: [{ $: { 'android:name': 'android.service.quicksettings.action.QS_TILE' } }],
+          },
+        ],
+      });
+    }
+
     return config;
   });
 

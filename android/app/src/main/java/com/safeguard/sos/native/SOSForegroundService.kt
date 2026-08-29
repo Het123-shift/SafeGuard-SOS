@@ -33,7 +33,10 @@ class SOSForegroundService : Service() {
         const val ACTION_TRIGGER_SOS = "com.safeguard.sos.ACTION_TRIGGER_SOS"
         const val ACTION_START_RECORDING = "com.safeguard.sos.ACTION_START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.safeguard.sos.ACTION_STOP_RECORDING"
-        const val EXTRA_SOURCE = "source" // e.g. "power_button_triple_press", "widget", "lock_screen_notification", "fall_detection", "impact_detection", "smartwatch"
+        const val ACTION_SMS_SENT = "com.safeguard.sos.ACTION_SMS_SENT"
+        const val ACTION_SMS_DELIVERED = "com.safeguard.sos.ACTION_SMS_DELIVERED"
+        const val EXTRA_SOURCE = "source"
+        const val EXTRA_RECIPIENT = "recipient"
 
         private const val CHANNEL_ID = "sos_channel"
         private const val NOTIFICATION_ID = 1001
@@ -44,10 +47,66 @@ class SOSForegroundService : Service() {
 
     private var recorder: MediaRecorder? = null
 
+    private val smsStatusReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val recipient = intent.getStringExtra(EXTRA_RECIPIENT) ?: "contact"
+            when (intent.action) {
+                ACTION_SMS_SENT -> {
+                    when (resultCode) {
+                        android.app.Activity.RESULT_OK -> {
+                            android.util.Log.i("SOSForegroundService", "✅ SMS SENT CONFIRMED by carrier to: $recipient")
+                        }
+                        SmsManager.RESULT_ERROR_NO_SERVICE -> {
+                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: No Cellular Service available for $recipient")
+                        }
+                        SmsManager.RESULT_ERROR_RADIO_OFF -> {
+                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: Airplane mode or Cellular Radio OFF for $recipient")
+                        }
+                        SmsManager.RESULT_ERROR_NULL_PDU -> {
+                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: Null PDU for $recipient")
+                        }
+                        else -> {
+                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: ResultCode $resultCode for $recipient")
+                        }
+                    }
+                }
+                ACTION_SMS_DELIVERED -> {
+                    when (resultCode) {
+                        android.app.Activity.RESULT_OK -> {
+                            android.util.Log.i("SOSForegroundService", "📬 SMS DELIVERED to recipient handset: $recipient")
+                        }
+                        else -> {
+                            android.util.Log.w("SOSForegroundService", "⚠️ SMS Delivery receipt failed with code $resultCode for: $recipient")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildSOSNotification())
+
+        val filter = android.content.IntentFilter().apply {
+            addAction(ACTION_SMS_SENT)
+            addAction(ACTION_SMS_DELIVERED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(smsStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(smsStatusReceiver, filter)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            unregisterReceiver(smsStatusReceiver)
+        } catch (e: Exception) {
+            // Safe ignore if receiver was not registered
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -111,11 +170,16 @@ class SOSForegroundService : Service() {
         Thread {
             val contacts = getPriorityContacts()
             val locationLink = getLastKnownLocationLink()
+            val alertMessage = buildAlertMessage(locationLink)
 
             for (contact in contacts) {
-                callContact(contact.phoneNumber)
-                sendSMS(contact.phoneNumber, buildAlertMessage(locationLink))
+                val normalizedPhone = normalizePhoneNumberToE164(contact.phoneNumber) ?: contact.phoneNumber
+                callContact(normalizedPhone)
+                sendSMS(normalizedPhone, alertMessage)
             }
+
+            // WhatsApp fallback for first contact (deep-link wa.me via ACTION_VIEW)
+            openWhatsAppForFirstContact(contacts, alertMessage)
 
             logSOSEvent(source, contacts.size)
         }.start()
@@ -136,6 +200,7 @@ class SOSForegroundService : Service() {
 
     private fun sendSMS(phoneNumber: String, message: String) {
         if (phoneNumber.isBlank()) return
+        val targetPhone = normalizePhoneNumberToE164(phoneNumber) ?: phoneNumber
         try {
             val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 getSystemService(SmsManager::class.java)
@@ -144,9 +209,80 @@ class SOSForegroundService : Service() {
                 SmsManager.getDefault()
             }
             val parts = smsManager.divideMessage(message)
-            smsManager.sendMultipartTextMessage(phoneNumber, null, parts, null, null)
+
+            val sentIntents = ArrayList<PendingIntent>()
+            val deliveredIntents = ArrayList<PendingIntent>()
+
+            for (i in parts.indices) {
+                val sentIntent = Intent(ACTION_SMS_SENT).apply {
+                    putExtra(EXTRA_RECIPIENT, targetPhone)
+                    setPackage(packageName)
+                }
+                val deliveredIntent = Intent(ACTION_SMS_DELIVERED).apply {
+                    putExtra(EXTRA_RECIPIENT, targetPhone)
+                    setPackage(packageName)
+                }
+                val sentPI = PendingIntent.getBroadcast(
+                    this,
+                    (System.currentTimeMillis() + i).toInt(),
+                    sentIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val deliveredPI = PendingIntent.getBroadcast(
+                    this,
+                    (System.currentTimeMillis() + i + 500).toInt(),
+                    deliveredIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                sentIntents.add(sentPI)
+                deliveredIntents.add(deliveredPI)
+            }
+
+            smsManager.sendMultipartTextMessage(targetPhone, null, parts, sentIntents, deliveredIntents)
+            android.util.Log.i("SOSForegroundService", "Dispatched multipart SMS (${parts.size} parts) via native SmsManager to: $targetPhone")
+        } catch (e: SecurityException) {
+            android.util.Log.e("SOSForegroundService", "❌ SecurityException: SEND_SMS runtime permission has NOT been granted for $targetPhone: ${e.message}")
         } catch (e: Exception) {
-            android.util.Log.e("SOSForegroundService", "Failed to send SMS to $phoneNumber: ${e.message}")
+            android.util.Log.e("SOSForegroundService", "❌ Failed to send SMS to $targetPhone: ${e.message}")
+        }
+    }
+
+    private fun normalizePhoneNumberToE164(phone: String, defaultCountryCode: String = "91"): String? {
+        if (phone.isBlank()) return null
+        var cleaned = phone.replace(Regex("[^0-9+]"), "")
+        if (cleaned.startsWith("+")) {
+            cleaned = cleaned.substring(1)
+        } else if (cleaned.startsWith("0") && cleaned.length == 11) {
+            cleaned = defaultCountryCode + cleaned.substring(1)
+        } else if (cleaned.length == 10) {
+            cleaned = defaultCountryCode + cleaned
+        }
+
+        return if (cleaned.matches(Regex("^[0-9]{10,15}$"))) {
+            cleaned
+        } else {
+            android.util.Log.w("SOSForegroundService", "Contact number failed E.164 normalization: $phone -> $cleaned")
+            null
+        }
+    }
+
+    private fun openWhatsAppForFirstContact(contacts: List<Contact>, message: String) {
+        for (contact in contacts) {
+            val normalized = normalizePhoneNumberToE164(contact.phoneNumber) ?: continue
+            try {
+                val encodedMsg = java.net.URLEncoder.encode(message, "UTF-8")
+                val url = "https://wa.me/$normalized?text=$encodedMsg"
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    data = android.net.Uri.parse(url)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+                android.util.Log.d("SOSForegroundService", "WhatsApp deep-link opened for first contact: $normalized")
+                break // Only open the first contact's WhatsApp chat automatically to avoid stacked UX
+            } catch (e: Exception) {
+                // If WhatsApp is not installed or intent fails, log and fail silently
+                android.util.Log.w("SOSForegroundService", "WhatsApp not installed or intent failed for $normalized: ${e.message}")
+            }
         }
     }
 

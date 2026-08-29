@@ -13,6 +13,7 @@ interface LiveLocationRecord {
   longitude: number;
   updated_at: string;
   is_active: boolean;
+  expires_at?: string;
 }
 
 export default function PublicLiveTrackingScreen() {
@@ -78,7 +79,8 @@ export default function PublicLiveTrackingScreen() {
     }
   };
 
-  const isActive = location?.is_active ?? false;
+  const isExpired = location?.expires_at ? new Date(location.expires_at).getTime() < Date.now() : false;
+  const isTrackingActive = (location?.is_active ?? false) && !isExpired;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -90,26 +92,32 @@ export default function PublicLiveTrackingScreen() {
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
         {/* Status Banner */}
-        <SafeCard variant={isActive ? 'danger' : 'default'} style={styles.statusCard}>
+        <SafeCard variant={isTrackingActive ? 'danger' : 'default'} style={styles.statusCard}>
           <View style={styles.statusRow}>
-            <View style={[styles.statusPulse, { backgroundColor: isActive ? Colors.dangerSurface : Colors.surfaceAlt }]}>
+            <View style={[styles.statusPulse, { backgroundColor: isTrackingActive ? Colors.dangerSurface : Colors.surfaceAlt }]}>
               <MaterialIcons
-                name={isActive ? "radar" : "check-circle"}
+                name={isTrackingActive ? "radar" : isExpired ? "timer-off" : "check-circle"}
                 size={24}
-                color={isActive ? Colors.danger : Colors.textSecondary}
+                color={isTrackingActive ? Colors.danger : Colors.textSecondary}
               />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.statusTitle}>
-                {isActive ? 'LIVE EMERGENCY TRACKING ACTIVE' : 'TRACKING ENDED'}
+                {isTrackingActive
+                  ? 'LIVE EMERGENCY TRACKING ACTIVE'
+                  : isExpired
+                  ? 'TRACKING SESSION EXPIRED'
+                  : 'TRACKING ENDED'}
               </Text>
               <Text style={styles.statusSub}>
-                {isActive
+                {isTrackingActive
                   ? 'Real-time GPS updates from user device'
+                  : isExpired
+                  ? 'This live tracking session has expired after 2 hours'
                   : 'The user has deactivated or resolved the SOS alert'}
               </Text>
             </View>
-            {isActive ? (
+            {isTrackingActive ? (
               <View style={styles.liveBadge}>
                 <View style={styles.liveDot} />
                 <Text style={styles.liveBadgeText}>LIVE</Text>
@@ -121,7 +129,7 @@ export default function PublicLiveTrackingScreen() {
         {/* Map / Coordinates Card */}
         <View style={styles.mapCard}>
           <View style={styles.mapHeader}>
-            <MaterialIcons name="my-location" size={20} color={isActive ? Colors.danger : Colors.secondary} />
+            <MaterialIcons name="my-location" size={20} color={isTrackingActive ? Colors.danger : Colors.secondary} />
             <Text style={styles.mapTitle}>Current Location Coordinates</Text>
           </View>
 
@@ -147,7 +155,7 @@ export default function PublicLiveTrackingScreen() {
               <View style={styles.updateTicker}>
                 <MaterialIcons name="access-time" size={14} color={Colors.textSecondary} />
                 <Text style={styles.updateTickerText}>
-                  {isActive
+                  {isTrackingActive
                     ? `Updated ${secondsAgo} seconds ago`
                     : `Ended at ${new Date(location.updated_at).toLocaleTimeString()}`}
                 </Text>

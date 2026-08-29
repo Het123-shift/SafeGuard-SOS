@@ -184,20 +184,30 @@ export const SupabaseService = {
     }
   },
 
-  // Upsert live location row for an active SOS event
-  async upsertLiveLocation(sosEventId: string, latitude: number, longitude: number, isActive: boolean = true): Promise<boolean> {
+  // Upsert live location row for an active SOS event (with 2-hour default expiration window)
+  async upsertLiveLocation(
+    sosEventId: string,
+    latitude: number,
+    longitude: number,
+    isActive: boolean = true,
+    expiresAt?: string
+  ): Promise<boolean> {
     if (!supabase) return false;
     try {
-      const payload = {
+      const now = new Date();
+      // Default expiration: 2 hours from now
+      const expirationDate = expiresAt || new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
+      const payload: Record<string, any> = {
         sos_event_id: sosEventId,
         latitude,
         longitude,
-        updated_at: new Date().toISOString(),
+        updated_at: now.toISOString(),
         is_active: isActive,
+        expires_at: expirationDate,
       };
       const { error } = await supabase.from('live_locations').upsert(payload, { onConflict: 'sos_event_id' });
       if (error) throw error;
-      console.log(`[SupabaseService] Upserted live location for ${sosEventId}:`, { latitude, longitude, isActive });
+      console.log(`[SupabaseService] Upserted live location for ${sosEventId}:`, { latitude, longitude, isActive, expires_at: expirationDate });
       return true;
     } catch (err) {
       console.warn('Supabase upsertLiveLocation error:', err);

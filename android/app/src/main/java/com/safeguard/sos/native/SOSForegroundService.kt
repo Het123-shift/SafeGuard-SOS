@@ -1,16 +1,20 @@
 package com.safeguard.sos.native
 
+import android.Manifest
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
 import android.telephony.SmsManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -50,33 +54,34 @@ class SOSForegroundService : Service() {
     private val smsStatusReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val recipient = intent.getStringExtra(EXTRA_RECIPIENT) ?: "contact"
+            Log.d("SOS_DEBUG", "smsStatusReceiver onReceive action=${intent.action}, recipient=$recipient, resultCode=$resultCode")
             when (intent.action) {
                 ACTION_SMS_SENT -> {
                     when (resultCode) {
                         android.app.Activity.RESULT_OK -> {
-                            android.util.Log.i("SOSForegroundService", "✅ SMS SENT CONFIRMED by carrier to: $recipient")
+                            Log.i("SOS_DEBUG", "✅ SMS SENT CONFIRMED by carrier to: $recipient")
                         }
                         SmsManager.RESULT_ERROR_NO_SERVICE -> {
-                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: No Cellular Service available for $recipient")
+                            Log.e("SOS_DEBUG", "❌ SMS SEND FAILED: No Cellular Service available for $recipient")
                         }
                         SmsManager.RESULT_ERROR_RADIO_OFF -> {
-                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: Airplane mode or Cellular Radio OFF for $recipient")
+                            Log.e("SOS_DEBUG", "❌ SMS SEND FAILED: Airplane mode or Cellular Radio OFF for $recipient")
                         }
                         SmsManager.RESULT_ERROR_NULL_PDU -> {
-                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: Null PDU for $recipient")
+                            Log.e("SOS_DEBUG", "❌ SMS SEND FAILED: Null PDU for $recipient")
                         }
                         else -> {
-                            android.util.Log.e("SOSForegroundService", "❌ SMS SEND FAILED: ResultCode $resultCode for $recipient")
+                            Log.e("SOS_DEBUG", "❌ SMS SEND FAILED: ResultCode $resultCode for $recipient")
                         }
                     }
                 }
                 ACTION_SMS_DELIVERED -> {
                     when (resultCode) {
                         android.app.Activity.RESULT_OK -> {
-                            android.util.Log.i("SOSForegroundService", "📬 SMS DELIVERED to recipient handset: $recipient")
+                            Log.i("SOS_DEBUG", "📬 SMS DELIVERED to recipient handset: $recipient")
                         }
                         else -> {
-                            android.util.Log.w("SOSForegroundService", "⚠️ SMS Delivery receipt failed with code $resultCode for: $recipient")
+                            Log.w("SOS_DEBUG", "⚠️ SMS Delivery receipt code $resultCode for: $recipient")
                         }
                     }
                 }
@@ -86,33 +91,48 @@ class SOSForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d("SOS_DEBUG", "SOSForegroundService.onCreate() entered.")
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildSOSNotification())
+        try {
+            startForeground(NOTIFICATION_ID, buildSOSNotification())
+            Log.d("SOS_DEBUG", "SOSForegroundService: startForeground() succeeded.")
+        } catch (e: Exception) {
+            Log.e("SOS_DEBUG", "SOSForegroundService: startForeground() failed with exception:", e)
+        }
 
         val filter = android.content.IntentFilter().apply {
             addAction(ACTION_SMS_SENT)
             addAction(ACTION_SMS_DELIVERED)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(smsStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(smsStatusReceiver, filter)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(smsStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                Log.d("SOS_DEBUG", "smsStatusReceiver registered with RECEIVER_NOT_EXPORTED flag (Android 13+).")
+            } else {
+                registerReceiver(smsStatusReceiver, filter)
+                Log.d("SOS_DEBUG", "smsStatusReceiver registered.")
+            }
+        } catch (e: Exception) {
+            Log.e("SOS_DEBUG", "Failed to register smsStatusReceiver:", e)
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d("SOS_DEBUG", "SOSForegroundService.onDestroy() entered.")
         try {
             unregisterReceiver(smsStatusReceiver)
         } catch (e: Exception) {
-            // Safe ignore if receiver was not registered
+            // Safe ignore
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        val action = intent?.action
+        val source = intent?.getStringExtra(EXTRA_SOURCE) ?: "unknown"
+        Log.d("SOS_DEBUG", "SOSForegroundService.onStartCommand() action=$action, source=$source, startId=$startId")
+        when (action) {
             ACTION_TRIGGER_SOS -> {
-                val source = intent.getStringExtra(EXTRA_SOURCE) ?: "unknown"
                 triggerSOS(source)
             }
             ACTION_START_RECORDING -> startVoiceRecording()
@@ -163,43 +183,68 @@ class SOSForegroundService : Service() {
     // ---------- SOS trigger: call + SMS per contact ----------
 
     private fun triggerSOS(source: String) {
+        Log.d("SOS_DEBUG", "SOSForegroundService.triggerSOS() entered with source=$source")
         // Start recording FIRST, automatically for every trigger source
         startVoiceRecording()
 
         // Execute dispatch on background thread to handle network & telephony safely
         Thread {
-            val contacts = getPriorityContacts()
-            val locationLink = getLastKnownLocationLink()
-            val alertMessage = buildAlertMessage(locationLink)
+            try {
+                Log.d("SOS_DEBUG", "SOS dispatch background thread running...")
+                val contacts = getPriorityContacts()
+                Log.d("SOS_DEBUG", "Priority contacts found count=${contacts.size}: ${contacts.map { "${it.name}: ${it.phoneNumber}" }}")
+                val locationLink = getLastKnownLocationLink()
+                Log.d("SOS_DEBUG", "Location link resolved: $locationLink")
+                val alertMessage = buildAlertMessage(locationLink)
+                Log.d("SOS_DEBUG", "Alert message generated (length=${alertMessage.length}): $alertMessage")
 
-            for (contact in contacts) {
-                val normalizedPhone = normalizePhoneNumberToE164(contact.phoneNumber) ?: contact.phoneNumber
-                callContact(normalizedPhone)
-                sendSMS(normalizedPhone, alertMessage)
+                if (contacts.isEmpty()) {
+                    Log.w("SOS_DEBUG", "⚠️ No priority contacts found in cache! SMS cannot be sent to any recipient.")
+                }
+
+                for (contact in contacts) {
+                    val normalizedPhone = normalizePhoneNumberToE164(contact.phoneNumber) ?: contact.phoneNumber
+                    Log.d("SOS_DEBUG", "Processing contact '${contact.name}' with phone='${contact.phoneNumber}' -> normalized='$normalizedPhone'")
+                    callContact(normalizedPhone)
+                    sendSMS(normalizedPhone, alertMessage)
+                }
+
+                // WhatsApp fallback for first contact (deep-link wa.me via ACTION_VIEW)
+                openWhatsAppForFirstContact(contacts, alertMessage)
+
+                logSOSEvent(source, contacts.size)
+                Log.d("SOS_DEBUG", "SOS dispatch background thread finished successfully.")
+            } catch (e: Exception) {
+                Log.e("SOS_DEBUG", "❌ Fatal error in SOS dispatch background thread:", e)
             }
-
-            // WhatsApp fallback for first contact (deep-link wa.me via ACTION_VIEW)
-            openWhatsAppForFirstContact(contacts, alertMessage)
-
-            logSOSEvent(source, contacts.size)
         }.start()
     }
 
     private fun callContact(phoneNumber: String) {
         if (phoneNumber.isBlank()) return
+        Log.d("SOS_DEBUG", "callContact() entered for $phoneNumber")
         try {
             val callIntent = Intent(Intent.ACTION_CALL).apply {
                 data = android.net.Uri.parse("tel:$phoneNumber")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             startActivity(callIntent)
+            Log.d("SOS_DEBUG", "callContact: ACTION_CALL intent dispatched to $phoneNumber")
         } catch (e: Exception) {
-            android.util.Log.e("SOSForegroundService", "Failed to place call to $phoneNumber: ${e.message}")
+            Log.e("SOS_DEBUG", "Failed to place call to $phoneNumber:", e)
         }
     }
 
     private fun sendSMS(phoneNumber: String, message: String) {
-        if (phoneNumber.isBlank()) return
+        Log.d("SOS_DEBUG", "sendSMS() entered for raw phoneNumber='$phoneNumber'")
+        if (phoneNumber.isBlank()) {
+            Log.w("SOS_DEBUG", "sendSMS() aborted: phoneNumber is blank")
+            return
+        }
+
+        val hasPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
+        Log.d("SOS_DEBUG", "checkSMSPermission() at sendSMS runtime moment: hasPermission=$hasPermission")
+
         val targetPhone = normalizePhoneNumberToE164(phoneNumber) ?: phoneNumber
         try {
             val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -209,6 +254,7 @@ class SOSForegroundService : Service() {
                 SmsManager.getDefault()
             }
             val parts = smsManager.divideMessage(message)
+            Log.d("SOS_DEBUG", "divideMessage created ${parts.size} parts for targetPhone='$targetPhone'")
 
             val sentIntents = ArrayList<PendingIntent>()
             val deliveredIntents = ArrayList<PendingIntent>()
@@ -238,12 +284,13 @@ class SOSForegroundService : Service() {
                 deliveredIntents.add(deliveredPI)
             }
 
+            Log.d("SOS_DEBUG", "Invoking smsManager.sendMultipartTextMessage to $targetPhone with ${parts.size} parts...")
             smsManager.sendMultipartTextMessage(targetPhone, null, parts, sentIntents, deliveredIntents)
-            android.util.Log.i("SOSForegroundService", "Dispatched multipart SMS (${parts.size} parts) via native SmsManager to: $targetPhone")
+            Log.i("SOS_DEBUG", "✅ Dispatched multipart SMS (${parts.size} parts) via native SmsManager to: $targetPhone")
         } catch (e: SecurityException) {
-            android.util.Log.e("SOSForegroundService", "❌ SecurityException: SEND_SMS runtime permission has NOT been granted for $targetPhone: ${e.message}")
+            Log.e("SOS_DEBUG", "❌ SecurityException: SEND_SMS runtime permission has NOT been granted for $targetPhone: ${e.message}", e)
         } catch (e: Exception) {
-            android.util.Log.e("SOSForegroundService", "❌ Failed to send SMS to $targetPhone: ${e.message}")
+            Log.e("SOS_DEBUG", "❌ Exception in sendSMS for $targetPhone: ${e.message}", e)
         }
     }
 
@@ -335,12 +382,14 @@ class SOSForegroundService : Service() {
 
     private fun getPriorityContacts(): List<Contact> {
         val result = mutableListOf<Contact>()
+        Log.d("SOS_DEBUG", "getPriorityContacts() started...")
 
         // 1. Try reading from React Native AsyncStorage SQLite DB (RKStorage / AsyncStorage.db)
         try {
             val dbFile = getDatabasePath("RKStorage")
             val altDbFile = getDatabasePath("AsyncStorage.db")
             val targetFile = if (dbFile.exists()) dbFile else if (altDbFile.exists()) altDbFile else null
+            Log.d("SOS_DEBUG", "Checking AsyncStorage DB files: RKStorage exists=${dbFile.exists()}, AsyncStorage.db exists=${altDbFile.exists()}")
 
             if (targetFile != null) {
                 val db = android.database.sqlite.SQLiteDatabase.openDatabase(
@@ -354,6 +403,7 @@ class SOSForegroundService : Service() {
                 )
                 if (cursor.moveToFirst()) {
                     val jsonVal = cursor.getString(0)
+                    Log.d("SOS_DEBUG", "Found @safeguard_contacts in SQLite DB: $jsonVal")
                     val jsonArray = JSONArray(jsonVal)
                     for (i in 0 until jsonArray.length()) {
                         val obj = jsonArray.getJSONObject(i)
@@ -369,7 +419,7 @@ class SOSForegroundService : Service() {
                 db.close()
             }
         } catch (e: Exception) {
-            android.util.Log.w("SOSForegroundService", "Error reading contacts from AsyncStorage DB: ${e.message}")
+            Log.w("SOS_DEBUG", "Error reading contacts from AsyncStorage DB: ${e.message}")
         }
 
         // 2. Fallback to SharedPreferences "safeguard_sos_prefs"
@@ -377,6 +427,7 @@ class SOSForegroundService : Service() {
             try {
                 val prefs = getSharedPreferences("safeguard_sos_prefs", Context.MODE_PRIVATE)
                 val jsonVal = prefs.getString("priority_contacts", null)
+                Log.d("SOS_DEBUG", "Checking SharedPreferences 'priority_contacts': $jsonVal")
                 if (jsonVal != null) {
                     val jsonArray = JSONArray(jsonVal)
                     for (i in 0 until jsonArray.length()) {
@@ -389,16 +440,18 @@ class SOSForegroundService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.w("SOSForegroundService", "Error reading contacts from SharedPreferences: ${e.message}")
+                Log.w("SOS_DEBUG", "Error reading contacts from SharedPreferences: ${e.message}")
             }
         }
 
         // 3. Fallback to Supabase / OnSpace REST API fetch if network is available
         if (result.isEmpty()) {
+            Log.d("SOS_DEBUG", "Cache empty. Attempting direct Supabase REST API fetch for contacts...")
             val httpContacts = fetchContactsFromSupabase()
             result.addAll(httpContacts)
         }
 
+        Log.d("SOS_DEBUG", "getPriorityContacts() returning ${result.size} contacts total.")
         return result
     }
 
@@ -412,9 +465,11 @@ class SOSForegroundService : Service() {
             conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON_KEY")
             conn.connectTimeout = 3000
             conn.readTimeout = 3000
+            Log.d("SOS_DEBUG", "Supabase REST contacts query responseCode=${conn.responseCode}")
             if (conn.responseCode == 200) {
                 val stream = conn.inputStream
                 val text = stream.bufferedReader().use { it.readText() }
+                Log.d("SOS_DEBUG", "Supabase REST contacts response: $text")
                 val jsonArray = JSONArray(text)
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
@@ -427,7 +482,7 @@ class SOSForegroundService : Service() {
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.w("SOSForegroundService", "Supabase HTTP fetch error: ${e.message}")
+            Log.e("SOS_DEBUG", "Failed to fetch contacts from Supabase REST API:", e)
         }
         return result
     }

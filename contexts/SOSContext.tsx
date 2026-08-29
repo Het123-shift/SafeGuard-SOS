@@ -191,22 +191,35 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const triggerSOS = (source: SOSSource = 'in_app_button') => {
+    console.log(`[SOS_DEBUG] triggerSOS() called. Source: ${source}, Platform: ${Platform.OS}`);
     setIsFallModalVisible(false);
     setPhase('countdown');
     setCountdown(3);
 
     // Call native Android bridge for persistent service + recording + SMS + call
     if (Platform.OS === 'android') {
+      console.log('[SOS_DEBUG] Checking SEND_SMS runtime permission before native dispatch...');
       checkSMSPermission().then((granted) => {
+        console.log(`[SOS_DEBUG] checkSMSPermission() result: ${granted}`);
         setHasSMSPermission(granted);
         if (!granted) {
-          requestEmergencyPermissions();
+          console.log('[SOS_DEBUG] SMS permission not granted, requesting from user...');
+          requestEmergencyPermissions().then((res) => {
+            console.log(`[SOS_DEBUG] requestEmergencyPermissions() returned: ${res}`);
+          });
         }
       });
-      triggerNativeSOS(source).catch((err: any) => console.warn('Native SOS trigger error:', err));
+
       StorageService.getContacts().then((contacts) => {
+        console.log(`[SOS_DEBUG] Retrieved ${contacts.length} contacts for SharedPreferences sync:`, JSON.stringify(contacts));
         getCurrentLocation().then((loc) => {
-          syncCachedSOSTriggerData(contacts, loc.lat, loc.lng);
+          console.log(`[SOS_DEBUG] Current location for sync: lat=${loc.lat}, lng=${loc.lng}`);
+          syncCachedSOSTriggerData(contacts, loc.lat, loc.lng).then(() => {
+            console.log('[SOS_DEBUG] syncCachedSOSTriggerData completed. Now invoking triggerNativeSOS...');
+            triggerNativeSOS(source)
+              .then((res) => console.log(`[SOS_DEBUG] triggerNativeSOS(${source}) returned:`, res))
+              .catch((err: any) => console.error('[SOS_DEBUG] Native SOS trigger error:', err));
+          });
         });
       });
     }
@@ -323,10 +336,12 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // 1. Fetch User Profile
     const user = await StorageService.getUser();
     const userName = user?.name || user?.email || 'SafeGuard User';
+    console.log(`[SOS_DEBUG] activateSOS() active! User: ${userName}, sosEventId: ${sosEventId}`);
 
     // 2. Retrieve Initial Live GPS Coordinates
     const loc = await getCurrentLocation();
     lastCoordsRef.current = { lat: loc.lat, lng: loc.lng };
+    console.log(`[SOS_DEBUG] activateSOS() initial GPS: lat=${loc.lat}, lng=${loc.lng}`);
 
     // 3. Upsert initial live location to live_locations table
     await SupabaseService.upsertLiveLocation(sosEventId, loc.lat, loc.lng, true);
@@ -337,14 +352,17 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // 5. Fetch Priority Emergency Contacts
     const contacts = await StorageService.getContacts();
     const contactPhones = contacts.map((c) => c.phone).filter(Boolean);
+    console.log(`[SOS_DEBUG] activateSOS() contact count=${contacts.length}, phones:`, contactPhones);
 
     let smsStatusResults: any[] = [];
     if (contactPhones.length > 0) {
       // 6a. Compute Live Tracking Web Portal URL
       const trackingUrl = getTrackingUrl(sosEventId);
       const emergencyMessage = `EMERGENCY SOS: ${userName} needs urgent help!\nTrack Live: ${trackingUrl}\nGoogle Maps: https://maps.google.com/?q=${loc.lat},${loc.lng}`;
+      console.log(`[SOS_DEBUG] emergencyMessage generated (length=${emergencyMessage.length}):`, emergencyMessage);
 
       // 6b. Call Edge Function (Twilio / MSG91 SMS) with Live Tracking Link
+      console.log('[SOS_DEBUG] Invoking SupabaseService.sendSOSEmergencySMS...');
       const smsResponse = await SupabaseService.sendSOSEmergencySMS(
         userName,
         loc.lat,
@@ -353,6 +371,7 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         user?.id,
         trackingUrl
       );
+      console.log('[SOS_DEBUG] SupabaseService.sendSOSEmergencySMS response:', JSON.stringify(smsResponse));
       smsStatusResults = smsResponse.results || [];
       for (const phone of contactPhones) {
         const cleanPhone = phone.replace(/[^0-9+]/g, '');

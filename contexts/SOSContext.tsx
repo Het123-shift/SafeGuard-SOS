@@ -98,6 +98,12 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setIsFallModalVisible(true);
     });
 
+    // Register accelerometer 5-tap lock-screen trigger callback
+    motionService.registerTapCallback((source) => {
+      console.log('[SOSContext] Accelerometer 5-Tap Lock-Screen Trigger received:', source);
+      triggerSOS('lock_screen_tap');
+    });
+
     // Register smartwatch remote trigger callback
     watchService.registerSOSTriggerCallback(() => {
       triggerSOS('smartwatch');

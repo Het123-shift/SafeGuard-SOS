@@ -9,6 +9,7 @@ export type SOSSource =
   | 'lock_screen_notification'
   | 'power_button_triple_press'
   | 'volume_button_triple_press'
+  | 'lock_screen_tap'
   | 'fall_detection'
   | 'impact_detection'
   | 'smartwatch';

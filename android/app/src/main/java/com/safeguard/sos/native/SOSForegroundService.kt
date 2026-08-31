@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.telephony.SmsManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -14,6 +15,8 @@ import org.json.JSONArray
 import java.io.File
 
 class SOSForegroundService : Service() {
+
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
         const val ACTION_TRIGGER_SOS = "com.safeguard.sos.ACTION_TRIGGER_SOS"
@@ -27,6 +30,16 @@ class SOSForegroundService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("SafeGuard Emergency Active", "Dispatching emergency alerts..."))
+
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SafeGuard:SOSForegroundWakeLock")?.apply {
+                acquire(10 * 60 * 1000L) // Hold wake lock for up to 10 minutes during active emergency
+            }
+            Log.d(TAG, "Acquired PARTIAL_WAKE_LOCK for screen-off sensor/dispatch survival")
+        } catch (e: Exception) {
+            Log.w(TAG, "WakeLock acquisition warning: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -110,6 +123,18 @@ class SOSForegroundService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .build()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d(TAG, "Released PARTIAL_WAKE_LOCK on service destruction")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "WakeLock release warning: ${e.message}")
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

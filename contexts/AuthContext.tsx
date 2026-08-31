@@ -2,6 +2,7 @@ import React, { createContext, useState, useEffect, ReactNode } from 'react';
 import { getSupabaseClient } from '@/template';
 import type { User } from '@supabase/supabase-js';
 import { StorageService } from '@/services/storageService';
+import { ApiService } from '@/services/apiService';
 
 export interface UserProfile {
   id: string;
@@ -48,12 +49,19 @@ interface AuthContextType {
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const USE_SELF_HOSTED = process.env.EXPO_PUBLIC_USE_SELF_HOSTED_BACKEND === 'true';
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [operationLoading, setOperationLoading] = useState(false);
 
-  const supabase = getSupabaseClient();
+  let supabase: any = null;
+  try {
+    supabase = getSupabaseClient();
+  } catch (e) {
+    console.log('[AuthContext] Supabase client optional init:', e);
+  }
 
   useEffect(() => {
     // Restore persistent session on mount immediately
@@ -66,6 +74,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } catch (err) {
         console.warn('[AuthContext] Error reading stored session:', err);
+      }
+
+      if (USE_SELF_HOSTED) {
+        try {
+          const profileRes = await ApiService.getProfile();
+          if (profileRes?.profile) {
+            setUser(profileRes.profile);
+            await StorageService.saveUser(profileRes.profile);
+            setIsLoading(false);
+            return;
+          }
+        } catch {
+          // Token expired or not present
+        }
       }
 
       try {
@@ -82,21 +104,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     restoreSession();
 
-    // Subscribe to auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        loadProfile(session.user);
-      } else {
-        StorageService.getUser().then((stored) => {
-          if (!stored) {
-            setUser(null);
+    // Subscribe to Supabase auth state changes as fallback listener if supabase is configured
+    let subscription: any = null;
+    if (supabase?.auth?.onAuthStateChange) {
+      const res = supabase.auth.onAuthStateChange((_event: any, session: any) => {
+        if (!USE_SELF_HOSTED) {
+          if (session?.user) {
+            loadProfile(session.user);
+          } else {
+            StorageService.getUser().then((stored) => {
+              if (!stored) {
+                setUser(null);
+              }
+              setIsLoading(false);
+            });
           }
-          setIsLoading(false);
-        });
-      }
-    });
+        }
+      });
+      subscription = res?.data?.subscription;
+    }
 
-    return () => subscription.unsubscribe();
+    return () => {
+      if (subscription?.unsubscribe) subscription.unsubscribe();
+    };
   }, []);
 
   const loadProfile = async (authUser: User) => {
@@ -141,9 +171,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string): Promise<boolean> => {
     setOperationLoading(true);
+
+    if (USE_SELF_HOSTED) {
+      try {
+        const res = await ApiService.login(email, password);
+        if (res.user) {
+          setUser(res.user);
+          await StorageService.saveUser(res.user);
+          setOperationLoading(false);
+          return true;
+        }
+      } catch (err: any) {
+        console.warn('[AuthContext] Self-hosted login failed, checking fallback:', err);
+      }
+    }
+
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     setOperationLoading(false);
-    
+
     if (error || !data?.session?.user) {
       // Fallback persistent user profile for offline / local mode
       const fallbackUser: UserProfile = {
@@ -180,6 +225,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setOperationLoading(true);
 
+    if (USE_SELF_HOSTED) {
+      try {
+        const res = await ApiService.register({
+          email: data.email,
+          password: data.password,
+          fullName: data.fullName,
+          phone: data.phone,
+          dateOfBirth: data.dateOfBirth,
+          gender: data.gender,
+          homeAddress: data.homeAddress,
+          city: data.city,
+          state: data.state,
+          country: data.country,
+          postalCode: data.postalCode,
+        });
+        if (res.user) {
+          setUser(res.user);
+          await StorageService.saveUser(res.user);
+          setOperationLoading(false);
+          return { error: null, needsConfirmation: false };
+        }
+      } catch (err: any) {
+        setOperationLoading(false);
+        console.error('[AuthContext] Self-hosted register error:', err);
+        return { error: err.message || 'Registration failed', needsConfirmation: false };
+      }
+    }
+
     const { data: authData, error } = await supabase.auth.signUp({
       email: data.email,
       password: data.password,
@@ -194,7 +267,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (authData.user) {
-      // Profile row is auto-created by trigger — update with full data
       await supabase.from('user_profiles').update({
         full_name: data.fullName || '',
         username: data.email.split('@')[0],
@@ -210,11 +282,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     setOperationLoading(false);
-    // needsConfirmation = true when session is null (email not yet confirmed)
     return { error: null, needsConfirmation: !authData.session };
   };
 
   const logout = async () => {
+    if (USE_SELF_HOSTED) {
+      try {
+        await ApiService.logout();
+      } catch {}
+    }
     try {
       await supabase.auth.signOut();
     } catch {}
@@ -224,6 +300,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateProfile = async (data: Partial<UserProfile>) => {
     if (!user) return;
+
+    if (USE_SELF_HOSTED) {
+      try {
+        const res = await ApiService.updateProfile(data);
+        if (res?.profile) {
+          setUser(res.profile);
+          await StorageService.saveUser(res.profile);
+          return;
+        }
+      } catch (err) {
+        console.warn('[AuthContext] Self-hosted updateProfile error:', err);
+      }
+    }
 
     const dbUpdate: Record<string, unknown> = {};
     if (data.fullName !== undefined) dbUpdate.full_name = data.fullName;
@@ -254,6 +343,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const sendEmailOTP = async (email: string): Promise<{ error: string | null }> => {
+    if (USE_SELF_HOSTED) {
+      try {
+        await ApiService.sendEmailOTP(email);
+        return { error: null };
+      } catch (err: any) {
+        console.error('[AuthContext] sendEmailOTP error:', err);
+        return { error: err.message || 'Failed to send verification code' };
+      }
+    }
+
     const { error } = await supabase.auth.signInWithOtp({ email });
     return { error: error?.message ?? null };
   };
@@ -262,6 +361,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     email: string,
     otp: string
   ): Promise<{ error: string | null }> => {
+    if (USE_SELF_HOSTED) {
+      try {
+        const res = await ApiService.verifyEmailOTP(email, otp);
+        if (res.user) {
+          setUser(res.user);
+          await StorageService.saveUser(res.user);
+          return { error: null };
+        }
+        return { error: 'Verification failed' };
+      } catch (err: any) {
+        console.error('[AuthContext] verifyEmailOTP error:', err);
+        return { error: err.message || 'Invalid or expired code' };
+      }
+    }
+
     const { error } = await supabase.auth.verifyOtp({ email, token: otp, type: 'email' });
     return { error: error?.message ?? null };
   };

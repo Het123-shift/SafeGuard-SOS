@@ -81,7 +81,7 @@ export default function LoginScreen() {
     const { error } = await verifyEmailOTP(otpEmail.trim(), otpCode);
     setOtpLoading(false);
     if (error) {
-      setOtpError('Invalid or expired code. Please try again.');
+      setOtpError(error || 'Invalid or expired code. Please try again.');
       setOtpCode('');
     } else {
       router.replace('/(tabs)');

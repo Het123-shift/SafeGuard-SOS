@@ -141,6 +141,7 @@
     "redux-thunk": "^2.3.0",
     "semver": "^7.6.0",
     "snack-content": "^3.2.0",
+    "socket.io-client": "^4.8.3",
     "tslib": "2.6.2",
     "url": "^0.11.0",
     "zustand": "^5.0.2"
@@ -155,7 +156,11 @@
   },
   "expo": {
     "autolinking": {
-      "exclude": ["expo-dev-client", "expo-dev-launcher", "expo-dev-menu"]
+      "exclude": [
+        "expo-dev-client",
+        "expo-dev-launcher",
+        "expo-dev-menu"
+      ]
     }
   },
   "private": true

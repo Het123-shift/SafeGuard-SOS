@@ -87,7 +87,7 @@ export default function ProfileScreen() {
       const { error } = await verifyEmailOTP(verifyInput.trim(), otpCode);
       setVerifyLoading(false);
       if (error) {
-        setVerifyError('Invalid or expired code. Please try again.');
+        setVerifyError(error || 'Invalid or expired code. Please try again.');
         setOtpCode('');
         return;
       }

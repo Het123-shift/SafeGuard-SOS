@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: safeguard-sos-api
+    env: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: safeguard-sos-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_DAYS
+        value: 7
+      - key: CORS_ORIGINS
+        value: https://safeguard-sos.app,http://localhost:8081
+
+databases:
+  - name: safeguard-sos-db
+    plan: free
+    databaseName: safeguard_sos
+    user: safeguard_admin

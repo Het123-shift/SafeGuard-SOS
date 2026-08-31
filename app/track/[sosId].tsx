@@ -4,6 +4,8 @@ import { useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { SupabaseService } from '@/services/supabaseService';
+import { ApiService } from '@/services/apiService';
+import { socketService } from '@/services/socketService';
 import { Colors, Typography, Spacing, Radius, Shadows } from '@/constants/theme';
 import { SafeCard } from '@/components/ui/SafeCard';
 
@@ -14,16 +16,19 @@ interface LiveLocationRecord {
   updated_at: string;
   is_active: boolean;
   expires_at?: string;
+  userName?: string;
 }
 
 export default function PublicLiveTrackingScreen() {
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ sosId: string }>();
+  const params = useLocalSearchParams<{ sosId: string; token?: string }>();
   const sosId = params.sosId;
+  const token = params.token;
 
   const [location, setLocation] = useState<LiveLocationRecord | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [secondsAgo, setSecondsAgo] = useState(0);
+  const [isExpiredLocally, setIsExpiredLocally] = useState(false);
 
   useEffect(() => {
     if (!sosId) {
@@ -33,24 +38,71 @@ export default function PublicLiveTrackingScreen() {
 
     let isMounted = true;
 
-    // Fetch initial live location snapshot
+    // Fetch initial live location snapshot (Try self-hosted API first, fallback to Supabase)
     const fetchInitial = async () => {
       setIsLoading(true);
+      try {
+        const data = await ApiService.getTrackingSnapshot(sosId, token);
+        if (isMounted && data && data.latitude !== undefined) {
+          setLocation({
+            sos_event_id: data.sosId,
+            latitude: data.latitude,
+            longitude: data.longitude,
+            updated_at: data.updatedAt,
+            is_active: data.isActive,
+            expires_at: data.expiresAt,
+            userName: data.userName,
+          });
+          setIsExpiredLocally(!!data.isExpired);
+          const lastUpdated = new Date(data.updatedAt).getTime();
+          setSecondsAgo(Math.max(0, Math.floor((Date.now() - lastUpdated) / 1000)));
+          setIsLoading(false);
+          return;
+        }
+      } catch (apiErr) {
+        console.log('[TrackScreen] Self-hosted tracking snapshot fallback to Supabase:', apiErr);
+      }
+
+      // Fallback to Supabase
       const data = await SupabaseService.getLiveLocation(sosId);
       if (isMounted && data) {
         setLocation(data);
         const lastUpdated = new Date(data.updated_at).getTime();
-        const now = Date.now();
-        setSecondsAgo(Math.max(0, Math.floor((now - lastUpdated) / 1000)));
+        setSecondsAgo(Math.max(0, Math.floor((Date.now() - lastUpdated) / 1000)));
       }
       if (isMounted) setIsLoading(false);
     };
 
     fetchInitial();
 
-    // Subscribe to real-time changes via Supabase Realtime channel
-    const unsubscribe = SupabaseService.subscribeToLiveLocation(sosId, (newLoc) => {
-      console.log('[TrackScreen] Realtime update received:', newLoc);
+    // 1. Connect via Socket.IO
+    const socket = socketService.connect(
+      sosId,
+      token,
+      (newLoc) => {
+        if (isMounted) {
+          console.log('[TrackScreen] Socket.IO realtime GPS received:', newLoc);
+          setLocation((prev) => ({
+            ...prev,
+            sos_event_id: sosId,
+            latitude: newLoc.latitude,
+            longitude: newLoc.longitude,
+            updated_at: newLoc.updatedAt || new Date().toISOString(),
+            is_active: newLoc.isActive !== undefined ? newLoc.isActive : true,
+          }));
+          setSecondsAgo(0);
+        }
+      },
+      () => {
+        if (isMounted) {
+          console.warn('[TrackScreen] Socket session expired');
+          setIsExpiredLocally(true);
+        }
+      }
+    );
+
+    // 2. Fallback subscription via Supabase Realtime
+    const unsubscribeSupabase = SupabaseService.subscribeToLiveLocation(sosId, (newLoc) => {
       if (isMounted) {
         setLocation(newLoc);
         setSecondsAgo(0);
@@ -64,10 +116,11 @@ export default function PublicLiveTrackingScreen() {
 
     return () => {
       isMounted = false;
-      unsubscribe();
+      socketService.disconnect();
+      unsubscribeSupabase();
       clearInterval(ticker);
     };
-  }, [sosId]);
+  }, [sosId, token]);
 
   const openInGoogleMaps = () => {
     if (!location) return;
@@ -79,8 +132,14 @@ export default function PublicLiveTrackingScreen() {
     }
   };
 
-  const isExpired = location?.expires_at ? new Date(location.expires_at).getTime() < Date.now() : false;
+  const isExpired = isExpiredLocally || (location?.expires_at ? new Date(location.expires_at).getTime() < Date.now() : false);
   const isTrackingActive = (location?.is_active ?? false) && !isExpired;
+
+  // Google Maps Static / Embed URL with Key
+  const googleMapsKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+  const mapEmbedUrl = location && googleMapsKey
+    ? `https://maps.googleapis.com/maps/api/staticmap?center=${location.latitude},${location.longitude}&zoom=16&size=600x300&maptype=roadmap&markers=color:red%7Clabel:S%7C${location.latitude},${location.longitude}&key=${googleMapsKey}`
+    : null;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -104,16 +163,16 @@ export default function PublicLiveTrackingScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.statusTitle}>
                 {isTrackingActive
-                  ? 'LIVE EMERGENCY TRACKING ACTIVE'
+                  ? `${location?.userName ? `${location.userName.toUpperCase()}: ` : ''}LIVE EMERGENCY TRACKING ACTIVE`
                   : isExpired
                   ? 'TRACKING SESSION EXPIRED'
                   : 'TRACKING ENDED'}
               </Text>
               <Text style={styles.statusSub}>
                 {isTrackingActive
-                  ? 'Real-time GPS updates from user device'
+                  ? 'Real-time GPS updates streaming via secure Socket.IO channel'
                   : isExpired
-                  ? 'This live tracking session has expired after 2 hours'
+                  ? 'This live tracking session has expired after 2 hours (server-enforced limit)'
                   : 'The user has deactivated or resolved the SOS alert'}
               </Text>
             </View>
@@ -178,13 +237,13 @@ export default function PublicLiveTrackingScreen() {
         <SafeCard style={styles.safetyCard}>
           <Text style={styles.safetyTitle}>Emergency Responder Instructions</Text>
           <Text style={styles.safetyBody}>
-            1. Click "Open Directions in Google Maps" above to navigate immediately to the user's location.
+            1. Click &quot;Open Directions in Google Maps&quot; above to navigate immediately to the user&apos;s location.
           </Text>
           <Text style={styles.safetyBody}>
             2. If you cannot reach the user, call local emergency services (112 / 911 / 100) immediately.
           </Text>
           <Text style={styles.safetyBody}>
-            3. Keep this page open; coordinates update automatically via live satellite GPS.
+            3. Keep this page open; coordinates stream automatically via live satellite GPS over secure WebSocket.
           </Text>
         </SafeCard>
       </ScrollView>

@@ -1,7 +1,9 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { ApiService } from './apiService';
 
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+const USE_SELF_HOSTED = process.env.EXPO_PUBLIC_USE_SELF_HOSTED_BACKEND === 'true';
 
 let supabase: SupabaseClient | null = null;
 
@@ -15,7 +17,7 @@ if (SUPABASE_URL && SUPABASE_ANON_KEY) {
 
 export interface SMSContactResult {
   phone: string;
-  status: 'sent' | 'failed';
+  status: 'sent' | 'failed' | 'cooldown_suppressed';
   messageSid?: string;
   error?: string;
 }
@@ -28,15 +30,27 @@ export interface SendSMSResponse {
 
 export const SupabaseService = {
   isConfigured(): boolean {
-    return !!supabase;
+    return !!supabase || USE_SELF_HOSTED;
   },
 
   getClient(): SupabaseClient | null {
     return supabase;
   },
 
-  // Server-enforced PIN verification via Postgres RPC
+  // Server-enforced PIN verification
   async verifyServerVaultPin(inputPin: string): Promise<any | null> {
+    if (USE_SELF_HOSTED) {
+      try {
+        const res = await ApiService.verifyVaultPin(inputPin);
+        return res;
+      } catch (err: any) {
+        if (err.status === 423) {
+          return err.data || { is_locked_out: true, remaining_seconds: 300 };
+        }
+        console.warn('[ApiService] verifyVaultPin error:', err);
+      }
+    }
+
     if (!supabase) return null;
     try {
       const { data, error } = await supabase.rpc('verify_vault_pin', { p_pin: inputPin });
@@ -48,8 +62,17 @@ export const SupabaseService = {
     }
   },
 
-  // Server-side PIN setup via Postgres RPC
+  // Server-side PIN setup
   async setServerVaultPin(newPin: string): Promise<boolean> {
+    if (USE_SELF_HOSTED) {
+      try {
+        const res = await ApiService.setVaultPin(newPin);
+        return !!res.success;
+      } catch (err) {
+        console.warn('[ApiService] setVaultPin error:', err);
+      }
+    }
+
     if (!supabase) return false;
     try {
       const { data, error } = await supabase.rpc('set_vault_pin', { p_pin: newPin });
@@ -61,7 +84,7 @@ export const SupabaseService = {
     }
   },
 
-  // Invoke send-sos-sms Edge Function with retry logic & per-contact delivery status
+  // Invoke send-sos-sms with retry logic & per-contact delivery status
   async sendSOSEmergencySMS(
     userName: string,
     latitude: number,
@@ -70,16 +93,30 @@ export const SupabaseService = {
     userId?: string,
     trackingUrl?: string
   ): Promise<SendSMSResponse> {
+    if (USE_SELF_HOSTED) {
+      try {
+        const res = await ApiService.sendSOSEmergencySMS({
+          userName,
+          latitude,
+          longitude,
+          contactPhones,
+          trackingUrl,
+        });
+        return res;
+      } catch (err: any) {
+        console.warn('[ApiService] sendSOSEmergencySMS fallback to Supabase:', err);
+      }
+    }
+
     if (!supabase) {
-      console.error('[sendSOSEmergencySMS] Supabase client is null/unconfigured. SUPABASE_URL:', SUPABASE_URL);
       return {
         success: false,
         results: contactPhones.map((phone) => ({
           phone,
           status: 'failed',
-          error: 'Supabase client not initialized',
+          error: 'Backend client not initialized',
         })),
-        error: 'Supabase client not configured',
+        error: 'Backend client not configured',
       };
     }
 
@@ -87,27 +124,15 @@ export const SupabaseService = {
     let attempt = 0;
     const maxRetries = 2;
 
-    console.log('[sendSOSEmergencySMS] Preparing to invoke "send-sos-sms". Configured SUPABASE_URL:', SUPABASE_URL);
-    console.log('[sendSOSEmergencySMS] Full Payload:', JSON.stringify(payload, null, 2));
-
     while (attempt <= maxRetries) {
       try {
-        console.log(`[sendSOSEmergencySMS] Invoking function (Attempt ${attempt + 1}/${maxRetries + 1})...`);
-        
         const { data, error } = await supabase.functions.invoke('send-sos-sms', {
           body: payload,
         });
 
-        console.log('[sendSOSEmergencySMS] RAW invoke response - data:', data);
-        console.log('[sendSOSEmergencySMS] RAW invoke response - error:', error);
-
-        if (error) {
-          console.error('[sendSOSEmergencySMS] Function invocation returned an error:', error);
-          throw new Error(error.message || `Edge function error: ${JSON.stringify(error)}`);
-        }
+        if (error) throw new Error(error.message || 'Edge function error');
 
         if (data && typeof data === 'object') {
-          console.log('[sendSOSEmergencySMS] Function returned data:', data);
           return {
             success: !!data.success,
             results: data.results || [],
@@ -115,7 +140,6 @@ export const SupabaseService = {
           };
         }
       } catch (err: any) {
-        console.error(`[sendSOSEmergencySMS] Catch block triggered on attempt ${attempt + 1}:`, err);
         attempt++;
         if (attempt > maxRetries) {
           return {
@@ -128,7 +152,6 @@ export const SupabaseService = {
             error: err.message || 'Network invocation failure',
           };
         }
-        // Exponential backoff delay (500ms, 1000ms)
         await new Promise((resolve) => setTimeout(resolve, Math.pow(2, attempt) * 250));
       }
     }
@@ -143,8 +166,19 @@ export const SupabaseService = {
     };
   },
 
-  // Sync contacts to Supabase
+  // Sync contacts
   async syncContacts(contacts: any[]): Promise<boolean> {
+    if (USE_SELF_HOSTED) {
+      try {
+        for (const contact of contacts) {
+          await ApiService.addContact(contact);
+        }
+        return true;
+      } catch (err) {
+        console.warn('[ApiService] syncContacts error:', err);
+      }
+    }
+
     if (!supabase) return false;
     try {
       const { error } = await supabase.from('contacts').upsert(contacts);
@@ -156,8 +190,22 @@ export const SupabaseService = {
     }
   },
 
-  // Log SOS event to Supabase DB
+  // Log SOS event
   async logSOSEvent(event: any): Promise<boolean> {
+    if (USE_SELF_HOSTED) {
+      try {
+        await ApiService.triggerSOS({
+          latitude: event.latitude || 0,
+          longitude: event.longitude || 0,
+          address: event.location || '',
+          triggerType: event.trigger_type || 'manual',
+        });
+        return true;
+      } catch (err) {
+        console.warn('[ApiService] logSOSEvent error:', err);
+      }
+    }
+
     if (!supabase) return false;
     try {
       const { error } = await supabase.from('sos_events').insert([event]);
@@ -169,8 +217,28 @@ export const SupabaseService = {
     }
   },
 
-  // Upload Evidence file blob to Supabase storage bucket
+  // Upload Evidence file
   async uploadEvidenceFile(fileBlob: Blob, fileName: string, userId: string = 'default'): Promise<string | null> {
+    if (USE_SELF_HOSTED) {
+      try {
+        const { uploadUrl, filePath } = await ApiService.getEvidenceUploadUrl(fileName, fileBlob.type || 'application/octet-stream');
+        await fetch(uploadUrl, {
+          method: 'PUT',
+          body: fileBlob,
+          headers: { 'Content-Type': fileBlob.type || 'application/octet-stream' },
+        });
+        await ApiService.saveEvidenceRecord({
+          name: fileName,
+          filePath,
+          mimeType: fileBlob.type || 'application/octet-stream',
+          fileSizeBytes: fileBlob.size,
+        });
+        return filePath;
+      } catch (err) {
+        console.warn('[ApiService] uploadEvidenceFile error:', err);
+      }
+    }
+
     if (!supabase) return null;
     try {
       const filePath = `${userId}/${Date.now()}_${fileName}.enc`;
@@ -184,7 +252,7 @@ export const SupabaseService = {
     }
   },
 
-  // Upsert live location row for an active SOS event (with 2-hour default expiration window)
+  // Upsert live location
   async upsertLiveLocation(
     sosEventId: string,
     latitude: number,
@@ -192,10 +260,18 @@ export const SupabaseService = {
     isActive: boolean = true,
     expiresAt?: string
   ): Promise<boolean> {
+    if (USE_SELF_HOSTED) {
+      try {
+        await ApiService.updateLiveLocation(sosEventId, latitude, longitude, isActive);
+        return true;
+      } catch (err) {
+        console.warn('[ApiService] upsertLiveLocation error:', err);
+      }
+    }
+
     if (!supabase) return false;
     try {
       const now = new Date();
-      // Default expiration: 2 hours from now
       const expirationDate = expiresAt || new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
       const payload: Record<string, any> = {
         sos_event_id: sosEventId,
@@ -207,7 +283,6 @@ export const SupabaseService = {
       };
       const { error } = await supabase.from('live_locations').upsert(payload, { onConflict: 'sos_event_id' });
       if (error) throw error;
-      console.log(`[SupabaseService] Upserted live location for ${sosEventId}:`, { latitude, longitude, isActive, expires_at: expirationDate });
       return true;
     } catch (err) {
       console.warn('Supabase upsertLiveLocation error:', err);
@@ -215,8 +290,17 @@ export const SupabaseService = {
     }
   },
 
-  // Get current live location for an SOS event
+  // Get current live location
   async getLiveLocation(sosEventId: string): Promise<any | null> {
+    if (USE_SELF_HOSTED) {
+      try {
+        const data = await ApiService.getTrackingSnapshot(sosEventId);
+        if (data) return data;
+      } catch (err) {
+        console.warn('[ApiService] getLiveLocation error:', err);
+      }
+    }
+
     if (!supabase) return null;
     try {
       const { data, error } = await supabase
@@ -232,7 +316,7 @@ export const SupabaseService = {
     }
   },
 
-  // Subscribe to real-time changes on live_locations for a specific SOS event
+  // Subscribe to real-time changes
   subscribeToLiveLocation(sosEventId: string, onUpdate: (data: any) => void) {
     if (!supabase) return () => {};
 
@@ -247,15 +331,12 @@ export const SupabaseService = {
           filter: `sos_event_id=eq.${sosEventId}`,
         },
         (payload) => {
-          console.log('[SupabaseService] Realtime live_locations payload received:', payload);
           if (payload.new) {
             onUpdate(payload.new);
           }
         }
       )
-      .subscribe((status) => {
-        console.log(`[SupabaseService] Realtime channel status for ${sosEventId}:`, status);
-      });
+      .subscribe();
 
     return () => {
       supabase?.removeChannel(channel);

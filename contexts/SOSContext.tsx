@@ -386,7 +386,13 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setPhase('active');
     setActiveSeconds(0);
 
-    const sosEventId = `sos_${Date.now()}`;
+    const sosEventId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+          const r = (Math.random() * 16) | 0;
+          const v = c === 'x' ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        });
     currentSOSEventIdRef.current = sosEventId;
     setActiveSOSEventId(sosEventId);
 

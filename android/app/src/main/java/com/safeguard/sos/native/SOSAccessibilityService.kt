@@ -50,7 +50,7 @@ class SOSAccessibilityService : AccessibilityService() {
     }
 
     private fun triggerHardwareSOS() {
-        Log.d(TAG, "Volume triple-press confirmed! Opening app and triggering emergency SOS...")
+        Log.d(TAG, "Volume triple-press confirmed on lock screen! Starting foreground SOS service...")
         
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -58,18 +58,39 @@ class SOSAccessibilityService : AccessibilityService() {
                 PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                 "safeguardsos:wake_volume_sos"
             )
-            wakeLock?.acquire(3000)
+            wakeLock?.acquire(5000)
         } catch (e: Exception) {
             Log.w(TAG, "Could not acquire wakelock: ${e.message}")
         }
 
-        val intent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
-            action = "TRIGGER_SOS_HARDWARE"
-            putExtra("source", "volume_button_triple_press")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        // 1. Start SOSForegroundService directly (survives lock screen & dispatches SMS immediately)
+        try {
+            val serviceIntent = Intent(this, SOSForegroundService::class.java).apply {
+                action = SOSForegroundService.ACTION_TRIGGER_SOS
+                putExtra(SOSForegroundService.EXTRA_SOURCE, "volume_button_triple_press")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            Log.d(TAG, "Dispatched SOSForegroundService from lock-screen hardware trigger")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start SOSForegroundService: ${e.message}")
         }
-        if (intent != null) {
-            startActivity(intent)
+
+        // 2. Launch UI over Keyguard / Lock Screen
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                action = "TRIGGER_SOS_HARDWARE"
+                putExtra("source", "volume_button_triple_press")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            }
+            if (intent != null) {
+                startActivity(intent)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Activity launch from lock screen: ${e.message}")
         }
 
         SOSNativeModule.notifyHardwareTrigger(this, "volume_button_triple_press")

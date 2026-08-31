@@ -17,18 +17,26 @@ class SOSWidgetProvider : AppWidgetProvider() {
         appWidgetIds: IntArray
     ) {
         for (appWidgetId in appWidgetIds) {
-            val intent = Intent(context, MainActivity::class.java).apply {
-                action = "TRIGGER_SOS_WIDGET"
-                putExtra("source", "widget")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            val serviceIntent = Intent(context, SOSForegroundService::class.java).apply {
+                action = SOSForegroundService.ACTION_TRIGGER_SOS
+                putExtra(SOSForegroundService.EXTRA_SOURCE, "home_screen_widget")
             }
 
-            val pendingIntent = PendingIntent.getActivity(
-                context,
-                0,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            val pendingIntent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                PendingIntent.getForegroundService(
+                    context,
+                    0,
+                    serviceIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            } else {
+                PendingIntent.getService(
+                    context,
+                    0,
+                    serviceIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            }
 
             val views = RemoteViews(context.packageName, R.layout.widget_sos)
             views.setOnClickPendingIntent(R.id.widget_sos_button, pendingIntent)

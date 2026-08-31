@@ -92,6 +92,13 @@ export const SOSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     checkSMSPermission().then(setHasSMSPermission);
     loadHistory();
 
+    // Pre-sync stored emergency contacts to native SharedPreferences for screen-off/lock-screen triggers
+    StorageService.getContacts().then((stored) => {
+      if (stored && stored.length > 0) {
+        syncCachedSOSTriggerData(stored).catch(() => {});
+      }
+    }).catch(() => {});
+
     // Register fall/impact detection callback
     motionService.registerFallCallback((source) => {
       fallSourceRef.current = source || 'fall_detection';

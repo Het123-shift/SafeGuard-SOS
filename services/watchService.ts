@@ -12,6 +12,10 @@ export interface WatchStatus {
 }
 
 class WatchService {
+  private statusListeners: Array<(status: WatchStatus) => void> = [];
+  private onRemoteSOSTrigger: ((payload?: { heartRate?: number }) => void) | null = null;
+  private heartRateTimer: any = null;
+
   private status: WatchStatus = {
     isPaired: false,
     isConnected: false,
@@ -88,8 +92,6 @@ class WatchService {
     this.status.isConnected = connected;
     this.notifyStatusListeners();
   }
-
-  private statusListeners: Array<(status: WatchStatus) => void> = [];
 
   public addStatusListener(listener: (status: WatchStatus) => void): () => void {
     this.statusListeners.push(listener);
